@@ -1,0 +1,64 @@
+###########################################
+# The [station] section identifies the callsign and name of the station
+###########################################
+[station]
+callsign = "N0CAL"
+
+# used when igating is enabled 
+name = "my igate"
+
+
+###########################################
+# The [location] section specifies the location and altitude (in feet) of this station's location
+###########################################
+[location]
+
+# station's location (only used when gpsd is NOT enabled)
+lat = 39.348724
+lon = -104.797296
+
+# station's altitude is in feet (only used when gpsd is NOT enabled)
+alt = 6700
+
+
+###########################################
+# The [aprsis] section
+###########################################
+[aprsis]
+# The passcode should be based off of this station's callsign (above).
+passcode = "12345"
+host = "noam.aprs2.net"
+port = 14580
+
+# Notes about overlay and symbol.  
+#
+# No overlay:
+#     comment out the overlay statement when using an icon without an overlay (e.g. a truck, or car that wouldn't have an overlaid character).
+# 
+# symbol:
+#     This should have two characters: 
+#         1st - the symbol table identifier (i.e. / for the primary table, or \ for the alternate table).  However, note that the '\' must be escaped,
+#             which ends up being the double backslash, "\\".  
+#         2nd - the second character should be the symbol itself.  For example, the 'k' character denotes a Truck icon.
+overlay = "R"
+symbol = "\\&"
+
+# if set to false, the no connection to APRS-IS will occur (regardless of the igating setting)
+enabled = true
+
+# if beaconing to the APRS-IS server is desired, set this to 'true'
+beaconing = true
+
+# set to 'true' to enable igating
+igating = true
+
+# how often to send telemetry and position beacons in seconds if igating or beaconing respectively
+threshold = 600
+
+
+###########################################
+# The [rtp] section specifies the hostname and port for listening to packets coming from the ka9q-radio backend.
+###########################################
+[rtp]
+host = "ax25.local"
+port = 5004
