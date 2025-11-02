@@ -13,12 +13,12 @@ name = "my igate"
 ###########################################
 [location]
 
-# station's location (only used when gpsd is NOT enabled)
-lat = 39.348724
-lon = -104.797296
+# station's location in decimal degrees
+lat = 44.9671
+lat = -103.7714
 
-# station's altitude is in feet (only used when gpsd is NOT enabled)
-alt = 6700
+# station's altitude is in feet 
+alt = 3160
 
 
 ###########################################
