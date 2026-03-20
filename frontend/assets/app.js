@@ -528,6 +528,7 @@
         es.onopen = function () {
             backoffMs = BACKOFF_INITIAL;
             setStatus(sseStatus, "connected", "SSE");
+            fetchConfig();
         };
 
         es.onerror = function () {
