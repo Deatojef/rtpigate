@@ -1,0 +1,27 @@
+[Unit]
+Description=rtpigate - APRS iGate for KA9Q-Radio
+Documentation=https://github.com/Deatojef/rtpigate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rtpigate
+Group=rtpigate
+ExecStart=/usr/local/bin/rtpigate /etc/rtpigate/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rtpigate
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

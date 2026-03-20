@@ -66,6 +66,7 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HttpConfig {
     pub listen: Option<String>,
+    pub frontend: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

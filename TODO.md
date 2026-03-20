@@ -18,7 +18,7 @@
 - [x] Responsive mobile layout — hides non-essential columns on narrow screens
 
 ## Operational
-- [ ] Systemd service file — .service unit for running as a daemon on the Pi with auto-restart
+- [x] Systemd service file — .service unit with install script, security hardening, SIGHUP reload
 - [x] Config file validation — validate all required fields at startup with clear error messages
 - [x] Signal-based config reload — SIGHUP re-reads and validates config.toml, updates frontend config
 

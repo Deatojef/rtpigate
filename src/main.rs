@@ -58,9 +58,17 @@ impl FromRef<AppState> for Arc<RwLock<PublicConfig>> {
 async fn main() -> Result<(), Box<dyn Error>> {
 
 
-    // read configuration first so we can set the log level
-    let config_path = "config.toml";
-    let config: Config = Config::from_file(config_path)?;
+    // resolve config file path: CLI arg > ./config.toml > /etc/rtpigate/config.toml
+    let config_path = std::env::args().nth(1).unwrap_or_else(|| {
+        if std::path::Path::new("config.toml").exists() {
+            "config.toml".to_string()
+        } else if std::path::Path::new("/etc/rtpigate/config.toml").exists() {
+            "/etc/rtpigate/config.toml".to_string()
+        } else {
+            "config.toml".to_string() // will fail with a clear error
+        }
+    });
+    let config: Config = Config::from_file(&config_path)?;
 
     // set log level based on verbose config setting
     let log_level = match config.station.verbose {
@@ -209,12 +217,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             public_config: shared_public_config.clone(),
         };
 
+        // resolve frontend assets path
+        let frontend_dir = shared_config.http.as_ref()
+            .and_then(|h| h.frontend.as_deref())
+            .unwrap_or("frontend");
+        let assets_dir = format!("{}/assets", frontend_dir);
+
+        info!("Frontend directory: {}", frontend_dir);
+
         // create a new Router
         let app = Router::new()
             .route("/api/sse", get(sse_handler))
             .route("/api/config", get(config_handler))
-            .nest_service("/assets", ServeDir::new("frontend/assets"))
-            .fallback_service(ServeDir::new("frontend").append_index_html_on_directories(true))
+            .nest_service("/assets", ServeDir::new(&assets_dir))
+            .fallback_service(ServeDir::new(frontend_dir).append_index_html_on_directories(true))
             .with_state(app_state);
 
         // HTTP listen address (configurable, defaults to localhost for security)
@@ -257,7 +273,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // SIGHUP: reload configuration
                 _ = sighup_stream.recv() => {
                     info!("Received SIGHUP, reloading configuration from {}...", config_path);
-                    match Config::from_file(config_path) {
+                    match Config::from_file(&config_path) {
                         Ok(new_config) => {
                             let errors = new_config.validate();
                             if !errors.is_empty() {
