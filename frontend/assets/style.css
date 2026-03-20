@@ -391,11 +391,12 @@ tr.inet-packet td.pkt-freq {
     font-weight: normal;
 }
 
-#heard-table th:nth-child(1) { width: 12ch; }    /* Callsign */
-#heard-table th:nth-child(2) { width: 10ch; }    /* Last Heard */
-#heard-table th:nth-child(3) { width: 10ch; }    /* Freq */
-#heard-table th:nth-child(4) { width: 30ch; }    /* Last Position */
-#heard-table th:nth-child(5) { width: 8ch; }     /* Count */
+#heard-table th:nth-child(1) { width: 3ch; }     /* Symbol */
+#heard-table th:nth-child(2) { width: 12ch; }    /* Callsign */
+#heard-table th:nth-child(3) { width: 10ch; }    /* Last Heard */
+#heard-table th:nth-child(4) { width: 10ch; }    /* Freq */
+#heard-table th:nth-child(5) { width: 30ch; }    /* Last Position */
+#heard-table th:nth-child(6) { width: 8ch; }     /* Count */
 
 #heard-table tbody td {
     padding: 2px 6px;
@@ -414,11 +415,21 @@ tr.inet-packet td.pkt-freq {
 }
 
 #heard-table td:nth-child(1) {
+    text-align: center;
+}
+
+#heard-table td:nth-child(1) img {
+    height: 16px;
+    width: 16px;
+    vertical-align: middle;
+}
+
+#heard-table td:nth-child(2) {
     font-weight: bold;
     color: var(--rf-color);
 }
 
-#heard-table td:nth-child(2) {
+#heard-table td:nth-child(3) {
     color: var(--text-muted);
     font-size: 0.9em;
 }
@@ -476,8 +487,8 @@ tr.inet-packet td.pkt-freq {
         table-layout: auto;
     }
 
-    #heard-table th:nth-child(4),
-    #heard-table td:nth-child(4) {
+    #heard-table th:nth-child(5),
+    #heard-table td:nth-child(5) {
         display: none;
     }
 }

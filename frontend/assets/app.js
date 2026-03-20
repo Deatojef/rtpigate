@@ -54,12 +54,18 @@
     function updateLastHeard(data) {
         var call = data.source;
         if (!lastHeard[call]) {
-            lastHeard[call] = { time: null, freq: 0, lat: null, lon: null, count: 0 };
+            lastHeard[call] = { time: null, freq: 0, lat: null, lon: null, symbolImg: null, count: 0 };
         }
         var entry = lastHeard[call];
         entry.time = data.receivetime;
         entry.freq = data.frequency;
         entry.count += 1;
+
+        // update symbol if available
+        var img = getSymbolImage(data.info, data.destination);
+        if (img) {
+            entry.symbolImg = img;
+        }
 
         // update position if available
         if (data.latitude != null && data.longitude != null) {
@@ -82,6 +88,16 @@
             var call = calls[i];
             var e = lastHeard[call];
             var tr = document.createElement("tr");
+
+            var tdSymbol = document.createElement("td");
+            if (e.symbolImg) {
+                var img = document.createElement("img");
+                img.src = e.symbolImg;
+                img.alt = "";
+                img.onerror = function () { this.style.display = "none"; };
+                tdSymbol.appendChild(img);
+            }
+            tr.appendChild(tdSymbol);
 
             var tdCall = document.createElement("td");
             tdCall.textContent = call;
