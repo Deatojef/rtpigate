@@ -99,7 +99,12 @@
             tr.appendChild(tdSymbol);
 
             var tdCall = document.createElement("td");
-            tdCall.textContent = call;
+            var callLink = document.createElement("a");
+            callLink.href = aprsfiUrl(call);
+            callLink.target = "_blank";
+            callLink.rel = "noopener";
+            callLink.textContent = call;
+            tdCall.appendChild(callLink);
             tr.appendChild(tdCall);
 
             var tdTime = document.createElement("td");
@@ -191,6 +196,9 @@
                 activeTooltip.classList.remove("visible");
                 activeTooltip = null;
             }
+            // also dismiss raw packet tooltip
+            rawTip.classList.remove("visible");
+            rawTip._source = null;
         });
     }
 
@@ -488,6 +496,12 @@
         return null;
     }
 
+    // ---- aprs.fi link helper ----
+
+    function aprsfiUrl(callsign) {
+        return "https://aprs.fi/#!call=" + encodeURIComponent(callsign);
+    }
+
     // ---- Map URL helper ----
 
     var isApplePlatform = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent);
@@ -587,6 +601,44 @@
         ctx.fill();
     }
 
+    // ---- Raw packet tooltip ----
+
+    var rawTip = document.createElement("span");
+    rawTip.className = "raw-tooltip";
+    document.body.appendChild(rawTip);
+
+    function showRawTooltip(tdEl) {
+        var raw = tdEl.getAttribute("data-raw");
+        if (!raw) return;
+
+        // toggle off if same cell clicked again
+        if (rawTip.classList.contains("visible") && rawTip._source === tdEl) {
+            rawTip.classList.remove("visible");
+            rawTip._source = null;
+            return;
+        }
+
+        rawTip.textContent = raw;
+        rawTip.classList.add("visible");
+        rawTip._source = tdEl;
+
+        // position above the clicked cell
+        var rect = tdEl.getBoundingClientRect();
+        var tipRect = rawTip.getBoundingClientRect();
+
+        var top = rect.top - tipRect.height - 6;
+        if (top < 4) top = rect.bottom + 6;
+
+        var left = rect.left;
+        if (left + tipRect.width > window.innerWidth - 4) {
+            left = window.innerWidth - tipRect.width - 4;
+        }
+        if (left < 4) left = 4;
+
+        rawTip.style.top = top + "px";
+        rawTip.style.left = left + "px";
+    }
+
     // ---- Packet row creation ----
 
     function addPacketRow(type, data) {
@@ -617,7 +669,12 @@
         // Source
         var tdSource = document.createElement("td");
         tdSource.className = "pkt-source";
-        tdSource.textContent = data.source;
+        var srcLink = document.createElement("a");
+        srcLink.href = aprsfiUrl(data.source);
+        srcLink.target = "_blank";
+        srcLink.rel = "noopener";
+        srcLink.textContent = data.source;
+        tdSource.appendChild(srcLink);
         tr.appendChild(tdSource);
 
         // Frequency
@@ -702,11 +759,15 @@
         }
         tr.appendChild(tdCoords);
 
-        // Packet text (info field)
+        // Packet text (info field) — click to show full raw packet
         var tdText = document.createElement("td");
         tdText.className = "pkt-text";
         tdText.textContent = data.info;
-        tdText.title = data.raw;
+        tdText.setAttribute("data-raw", data.raw);
+        tdText.addEventListener("click", function (e) {
+            e.stopPropagation();
+            showRawTooltip(this);
+        });
         tr.appendChild(tdText);
 
         // Insert at top

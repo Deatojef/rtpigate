@@ -396,10 +396,37 @@ td.pkt-text {
     text-overflow: ellipsis;
     color: var(--text-muted);
     max-width: 0;
+    cursor: pointer;
 }
 
-tr.rf-packet td.pkt-source {
+.raw-tooltip {
+    display: none;
+    position: fixed;
+    background-color: #222;
+    color: #fff;
+    font-size: 0.85rem;
+    padding: 6px 10px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    z-index: 100;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    max-width: 80vw;
+    pointer-events: none;
+}
+
+.raw-tooltip.visible {
+    display: block;
+}
+
+tr.rf-packet td.pkt-source,
+tr.rf-packet td.pkt-source a {
     color: var(--rf-color);
+    text-decoration: none;
+}
+
+tr.rf-packet td.pkt-source a:hover {
+    text-decoration: underline;
 }
 
 /* Last heard table */
@@ -466,9 +493,15 @@ tr.rf-packet td.pkt-source {
     vertical-align: middle;
 }
 
-#heard-table td:nth-child(2) {
+#heard-table td:nth-child(2),
+#heard-table td:nth-child(2) a {
     font-weight: bold;
     color: var(--rf-color);
+    text-decoration: none;
+}
+
+#heard-table td:nth-child(2) a:hover {
+    text-decoration: underline;
 }
 
 #heard-table td:nth-child(3),
