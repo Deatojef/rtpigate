@@ -2,13 +2,13 @@
 # The [station] section identifies the callsign and name of the station
 ###########################################
 [station]
-callsign = "N0JD"
+callsign = "N0CAL"
 
 # used when igating is enabled
 name = "Multi-frequency Rx Igate"
 
 # set to true to enable debug level logging for troubleshooting
-verbose = true
+verbose = false
 
 
 ###########################################
@@ -17,11 +17,11 @@ verbose = true
 [location]
 
 # station's location in decimal degrees
-lat = 39.348725 
-lon = -104.797296
+lat = 40.123
+lon = -103.123
 
 # station's altitude is in feet 
-alt = 6700
+alt = 1234
 
 
 ###########################################
@@ -29,7 +29,7 @@ alt = 6700
 ###########################################
 [aprsis]
 # The passcode should be based off of this station's callsign (above).
-passcode = "30614"
+passcode = "12345"
 host = "noam.aprs2.net"
 port = 14580
 
