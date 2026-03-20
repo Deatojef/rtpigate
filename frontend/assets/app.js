@@ -374,25 +374,31 @@
         // !DDMM.MMN/DDDMM.MMW...  (/ or @ have 7-char timestamp prefix)
         if (dataType === "!" || dataType === "=") {
             var posStr = info.substring(1);
-            // Check if compressed (next char is / or \)
-            if (posStr.charAt(0) === "/" || posStr.charAt(0) === "\\") {
+            var pc1 = posStr.charAt(0);
+            if (pc1 >= "0" && pc1 <= "9") {
+                // Uncompressed: DDMM.MMN/DDDMM.MMW
+                if (posStr.length >= 18) {
+                    var lat = parseDDMM(posStr.substring(0, 7), posStr.charAt(7));
+                    var lon = parseDDMM(posStr.substring(9, 17), posStr.charAt(17));
+                    if (lat !== null && lon !== null) return { lat: lat, lon: lon };
+                }
+            } else {
+                // Compressed: sym YYYY XXXX sym_code
                 return parseCompressedPos(posStr);
-            }
-            // Uncompressed: DDMM.MMN/DDDMM.MMW
-            if (posStr.length >= 18) {
-                var lat = parseDDMM(posStr.substring(0, 7), posStr.charAt(7));
-                var lon = parseDDMM(posStr.substring(9, 17), posStr.charAt(17));
-                if (lat !== null && lon !== null) return { lat: lat, lon: lon };
             }
         } else if (dataType === "/" || dataType === "@") {
             var posStr2 = info.substring(8); // skip /HHMMSSh or @HHMMSSh
-            if (posStr2.charAt(0) === "/" || posStr2.charAt(0) === "\\") {
+            var pc8 = posStr2.charAt(0);
+            if (pc8 >= "0" && pc8 <= "9") {
+                // Uncompressed
+                if (posStr2.length >= 18) {
+                    var lat2 = parseDDMM(posStr2.substring(0, 7), posStr2.charAt(7));
+                    var lon2 = parseDDMM(posStr2.substring(9, 17), posStr2.charAt(17));
+                    if (lat2 !== null && lon2 !== null) return { lat: lat2, lon: lon2 };
+                }
+            } else {
+                // Compressed
                 return parseCompressedPos(posStr2);
-            }
-            if (posStr2.length >= 18) {
-                var lat2 = parseDDMM(posStr2.substring(0, 7), posStr2.charAt(7));
-                var lon2 = parseDDMM(posStr2.substring(9, 17), posStr2.charAt(17));
-                if (lat2 !== null && lon2 !== null) return { lat: lat2, lon: lon2 };
             }
         }
         // Mic-E: ` or ' — position is encoded in the destination field, which we
@@ -437,26 +443,28 @@
 
         if (dataType === "!" || dataType === "=") {
             if (info.length >= 2) {
-                if (info.charAt(1) === "/" || info.charAt(1) === "\\") {
-                    // compressed: !sym YYYY XXXX sym_code cs T
-                    tableChar = info.charAt(1);
-                    if (info.length >= 11) symbolChar = info.charAt(10);
-                } else {
+                var c1 = info.charAt(1);
+                if (c1 >= "0" && c1 <= "9") {
                     // uncompressed: !DDMM.MMN sym DDDMM.MMW sym_code
                     if (info.length >= 10) tableChar = info.charAt(9);
                     if (info.length >= 20) symbolChar = info.charAt(19);
+                } else {
+                    // compressed: !sym YYYY XXXX sym_code cs T
+                    tableChar = c1;
+                    if (info.length >= 11) symbolChar = info.charAt(10);
                 }
             }
         } else if (dataType === "/" || dataType === "@") {
             if (info.length >= 9) {
-                if (info.charAt(8) === "/" || info.charAt(8) === "\\") {
-                    // compressed: @timestamp sym YYYY XXXX sym_code cs T
-                    tableChar = info.charAt(8);
-                    if (info.length >= 18) symbolChar = info.charAt(17);
-                } else {
+                var c8 = info.charAt(8);
+                if (c8 >= "0" && c8 <= "9") {
                     // uncompressed: @timestamp DDMM.MMN sym DDDMM.MMW sym_code
                     if (info.length >= 17) tableChar = info.charAt(16);
                     if (info.length >= 27) symbolChar = info.charAt(26);
+                } else {
+                    // compressed: @timestamp sym YYYY XXXX sym_code cs T
+                    tableChar = c8;
+                    if (info.length >= 18) symbolChar = info.charAt(17);
                 }
             }
         } else if (dataType === "`" || dataType === "'") {
