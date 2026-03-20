@@ -2,6 +2,7 @@
     "use strict";
 
     var MAX_PACKETS = 20;
+    var MAX_HEARD = 30;
     var packetBody = document.getElementById("packet-body");
 
     // Station location (fetched from /api/location)
@@ -83,7 +84,8 @@
         });
 
         heardBody.innerHTML = "";
-        for (var i = 0; i < calls.length; i++) {
+        var displayCount = Math.min(calls.length, MAX_HEARD);
+        for (var i = 0; i < displayCount; i++) {
             var call = calls[i];
             var e = lastHeard[call];
             var tr = document.createElement("tr");
