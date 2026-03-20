@@ -23,9 +23,10 @@ pub struct PacketTelemetry {
     pub name: String,
     pub timestamp: DateTime<Local>,
     pub microsecs: f64,
-    pub decode_errors: DataSeries<u32>,
-    pub heard_direct: DataSeries<u32>,
     pub total_packets: DataSeries<u32>,
+    pub heard_direct: DataSeries<u32>,
+    pub digipeated: DataSeries<u32>,
+    pub decode_errors: DataSeries<u32>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]

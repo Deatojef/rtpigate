@@ -144,6 +144,7 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
     // statistics
     let mut heard_direct = 0;
+    let mut digipeated = 0;
     let mut decode_errors = 0;
     let mut total_packets = 0;
 
@@ -156,7 +157,10 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
         name: String::from("heard_direct"),
         data: VecDeque::new(),
     };
-
+    let mut digipeated_series = DataSeries {
+        name: String::from("digipeated"),
+        data: VecDeque::new(),
+    };
     let mut decode_errors_series = DataSeries {
         name: String::from("decode_errors"),
         data: VecDeque::new(),
@@ -216,17 +220,14 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                     // add data points to series
                     packets_series.data.push_back(DataPoint { timestamp: the_time, value: total_packets, });
                     heard_direct_series.data.push_back(DataPoint { timestamp: the_time, value: heard_direct, });
+                    digipeated_series.data.push_back(DataPoint { timestamp: the_time, value: digipeated, });
                     decode_errors_series.data.push_back(DataPoint { timestamp: the_time, value: decode_errors, });
 
                     // trim series to max 100 data points
-                    if packets_series.data.len() > 100 {
-                        packets_series.data.pop_front();
-                    }
-                    if heard_direct_series.data.len() > 100 {
-                        heard_direct_series.data.pop_front();
-                    }
-                    if decode_errors_series.data.len() > 100 {
-                        decode_errors_series.data.pop_front();
+                    for series in [&mut packets_series, &mut heard_direct_series, &mut digipeated_series, &mut decode_errors_series] {
+                        if series.data.len() > 100 {
+                            series.data.pop_front();
+                        }
                     }
 
                     // get the current time
@@ -241,8 +242,9 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                         timestamp: the_time,
                         microsecs: microsecs,
                         total_packets: packets_series.clone(),
-                        decode_errors: decode_errors_series.clone(),
                         heard_direct: heard_direct_series.clone(),
+                        digipeated: digipeated_series.clone(),
+                        decode_errors: decode_errors_series.clone(),
                     };
 
                     // Send statistics to the channel
@@ -252,6 +254,7 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
                     // reset counters
                     heard_direct = 0;
+                    digipeated = 0;
                     decode_errors = 0;
                     total_packets = 0;
 
@@ -274,6 +277,8 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
                                             if p.heard_direct {
                                                 heard_direct += 1;
+                                            } else {
+                                                digipeated += 1;
                                             }
                                             total_packets += 1;
 

@@ -230,6 +230,45 @@ main {
     font-weight: normal;
 }
 
+.info-tip {
+    font-variant: normal;
+    font-size: 0.8em;
+    color: var(--text-dim);
+    cursor: help;
+    position: relative;
+    display: inline-block;
+}
+
+.info-tip:hover {
+    color: var(--text);
+}
+
+.info-tip .tip-text {
+    display: none;
+    position: fixed;
+    background-color: #222;
+    color: #fff;
+    font-size: 0.85rem;
+    font-variant: normal;
+    padding: 6px 10px;
+    border-radius: 4px;
+    white-space: nowrap;
+    z-index: 100;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    pointer-events: none;
+}
+
+.info-tip .tip-text.visible {
+    display: block;
+}
+
+/* Desktop hover — only on devices with a fine pointer (mouse) */
+@media (hover: hover) and (pointer: fine) {
+    .info-tip:hover .tip-text {
+        display: block;
+    }
+}
+
 .sparkline {
     display: block;
     margin-top: 4px;

@@ -14,10 +14,9 @@
     var aprsisStatus = document.getElementById("aprsis-status");
 
     // Statistic value elements
-    var statRfTotal = document.getElementById("stat-rf-total");
     var statRfDirect = document.getElementById("stat-rf-direct");
+    var statRfDigipeated = document.getElementById("stat-rf-digipeated");
     var statRfErrors = document.getElementById("stat-rf-errors");
-    var statAprsisRf = document.getElementById("stat-aprsis-rf");
     var statAprsisIgated = document.getElementById("stat-aprsis-igated");
     var statAprsisDropped = document.getElementById("stat-aprsis-dropped");
     var statAprsisReconnects = document.getElementById("stat-aprsis-reconnects");
@@ -134,6 +133,59 @@
 
             heardBody.appendChild(tr);
         }
+    }
+
+    // ---- Info tooltips (hover + tap support) ----
+
+    function setupTooltips() {
+        var tips = document.querySelectorAll(".info-tip");
+        var activeTooltip = null;
+
+        function positionTip(tipEl, textEl) {
+            textEl.classList.add("visible");
+
+            var rect = tipEl.getBoundingClientRect();
+            var tipRect = textEl.getBoundingClientRect();
+
+            var top = rect.top - tipRect.height - 6;
+            if (top < 4) top = rect.bottom + 6;
+
+            var left = rect.left + rect.width / 2 - tipRect.width / 2;
+            if (left < 4) left = 4;
+            if (left + tipRect.width > window.innerWidth - 4) {
+                left = window.innerWidth - tipRect.width - 4;
+            }
+
+            textEl.style.top = top + "px";
+            textEl.style.left = left + "px";
+        }
+
+        for (var i = 0; i < tips.length; i++) {
+            (function (tip) {
+                var textEl = tip.querySelector(".tip-text");
+
+                // click/tap toggle
+                tip.addEventListener("click", function (e) {
+                    e.stopPropagation();
+                    if (activeTooltip === textEl) {
+                        textEl.classList.remove("visible");
+                        activeTooltip = null;
+                    } else {
+                        if (activeTooltip) activeTooltip.classList.remove("visible");
+                        positionTip(tip, textEl);
+                        activeTooltip = textEl;
+                    }
+                });
+            })(tips[i]);
+        }
+
+        // dismiss on tap/click elsewhere
+        document.addEventListener("click", function () {
+            if (activeTooltip) {
+                activeTooltip.classList.remove("visible");
+                activeTooltip = null;
+            }
+        });
     }
 
     // ---- Theme toggle ----
@@ -431,6 +483,7 @@
         return series.data[series.data.length - 1].value;
     }
 
+
     // ---- Sparkline drawing ----
 
     function drawSparkline(canvasId, series, color) {
@@ -704,11 +757,11 @@
         es.addEventListener("packet_statistics", function (e) {
             onMessage();
             var data = JSON.parse(e.data);
-            statRfTotal.textContent = latestValue(data.total_packets);
             statRfDirect.textContent = latestValue(data.heard_direct);
+            statRfDigipeated.textContent = latestValue(data.digipeated);
             statRfErrors.textContent = latestValue(data.decode_errors);
-            drawSparkline("spark-rf-total", data.total_packets, "#81d4fa");
             drawSparkline("spark-rf-direct", data.heard_direct, "#a5d6a7");
+            drawSparkline("spark-rf-digipeated", data.digipeated, "#fff176");
             drawSparkline("spark-rf-errors", data.decode_errors, "#ef9a9a");
             setStatus(rtpStatus, "connected");
         });
@@ -716,11 +769,9 @@
         es.addEventListener("aprsis_statistics", function (e) {
             onMessage();
             var data = JSON.parse(e.data);
-            statAprsisRf.textContent = latestValue(data.rf_received);
             statAprsisIgated.textContent = latestValue(data.packets_igated);
             statAprsisDropped.textContent = latestValue(data.packets_dropped);
             statAprsisReconnects.textContent = latestValue(data.reconnects);
-            drawSparkline("spark-aprsis-rf", data.rf_received, "#81d4fa");
             drawSparkline("spark-aprsis-igated", data.packets_igated, "#fff176");
             drawSparkline("spark-aprsis-dropped", data.packets_dropped, "#ef9a9a");
             drawSparkline("spark-aprsis-reconnects", data.reconnects, "#ce93d8");
@@ -729,6 +780,7 @@
     }
 
     // Start
+    setupTooltips();
     setupThemeToggle();
     fetchConfig();
     connectSSE();
