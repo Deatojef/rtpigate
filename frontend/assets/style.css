@@ -311,7 +311,7 @@ main {
 #packet-table th:nth-child(1) { width: 9ch; }               /* Time: HH:MM:SS */
 #packet-table th:nth-child(2) { width: 3ch; }               /* Symbol icon */
 #packet-table th:nth-child(3) { width: 12ch; }              /* Source callsign */
-#packet-table th:nth-child(4) { width: 8ch; }               /* Freq: 144.390 */
+#packet-table th:nth-child(4) { width: 10ch; }              /* Freq: 144.390 + highlight padding */
 #packet-table th:nth-child(5) { width: 7ch; text-align: center; }   /* Direct */
 #packet-table th:nth-child(6) { width: 10ch; text-align: center; }  /* Satellite */
 #packet-table th:nth-child(7) { width: 30ch; }              /* Coordinates */
@@ -321,8 +321,6 @@ main {
     padding: 2px 6px;
     vertical-align: middle;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 #packet-table tbody tr {

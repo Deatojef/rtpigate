@@ -93,7 +93,7 @@
                 var img = document.createElement("img");
                 img.src = e.symbolImg;
                 img.alt = "";
-                img.onerror = function () { this.style.display = "none"; };
+                img.onerror = function () { this.parentNode.removeChild(this); };
                 tdSymbol.appendChild(img);
             }
             tr.appendChild(tdSymbol);
@@ -660,7 +660,7 @@
                 var img = document.createElement("img");
                 img.src = imgSrc;
                 img.alt = "";
-                img.onerror = function () { this.style.display = "none"; };
+                img.onerror = function () { this.parentNode.removeChild(this); };
                 tdSymbol.appendChild(img);
             }
         }
