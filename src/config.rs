@@ -98,6 +98,48 @@ pub struct RtpConfig {
     pub port: u32,
 }
 
+/// Sanitized APRS-IS config for the frontend (passcode omitted)
+#[derive(Serialize, Debug, Clone)]
+pub struct AprsisConfigPublic {
+    pub host: Option<String>,
+    pub port: Option<u32>,
+    pub enabled: Option<bool>,
+    pub beaconing: Option<bool>,
+    pub igating: Option<bool>,
+    pub symbol: Option<String>,
+    pub overlay: Option<String>,
+    pub threshold: Option<u64>,
+}
+
+/// Sanitized config for the frontend (no secrets)
+#[derive(Serialize, Debug, Clone)]
+pub struct PublicConfig {
+    pub station: StationConfig,
+    pub location: Location,
+    pub aprsis: AprsisConfigPublic,
+    pub rtp: RtpConfig,
+}
+
+impl Config {
+    pub fn to_public(&self) -> PublicConfig {
+        PublicConfig {
+            station: self.station.clone(),
+            location: self.location.clone(),
+            aprsis: AprsisConfigPublic {
+                host: self.aprsis.host.clone(),
+                port: self.aprsis.port,
+                enabled: self.aprsis.enabled,
+                beaconing: self.aprsis.beaconing,
+                igating: self.aprsis.igating,
+                symbol: self.aprsis.symbol.clone(),
+                overlay: self.aprsis.overlay.clone(),
+                threshold: self.aprsis.threshold,
+            },
+            rtp: self.rtp.clone(),
+        }
+    }
+}
+
 pub trait APRSISLogin {
     fn aprsis_login_string(&self) -> String;
 }

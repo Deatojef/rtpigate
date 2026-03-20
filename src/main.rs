@@ -2,10 +2,11 @@
 
 use axum::{
     extract::{State, FromRef},
-    response::{sse::Event, Sse},
+    response::{sse::Event, Json, Sse},
     routing::get,
     Router,
 };
+use tower_http::services::ServeDir;
 use tokio::{sync::broadcast, task::JoinSet};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
@@ -17,7 +18,7 @@ use flexi_logger::Logger;
 use log::{info, warn, error, debug};
 
 mod config;
-use config::{Config, DataItem};
+use config::{Config, DataItem, PublicConfig};
 
 mod ka9q;
 use ka9q::rtp_listener;
@@ -35,11 +36,18 @@ use sse::{sse_task, SSEEvent};
 #[derive(Clone)]
 struct AppState {
     sse_channel: broadcast::Sender<SSEEvent>,
+    public_config: PublicConfig,
 }
 
 impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.sse_channel.clone()
+    }
+}
+
+impl FromRef<AppState> for PublicConfig {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.public_config.clone()
     }
 }
 
@@ -173,11 +181,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // the application state
         let app_state = AppState {
             sse_channel: sse_tx,
+            public_config: shared_config.to_public(),
         };
 
         // create a new Router
         let app = Router::new()
             .route("/api/sse", get(sse_handler))
+            .route("/api/config", get(config_handler))
+            .nest_service("/assets", ServeDir::new("frontend/assets"))
+            .fallback_service(ServeDir::new("frontend").append_index_html_on_directories(true))
             .with_state(app_state);
 
         // Relying upon webserver to redirect from public facing IP:port to
@@ -227,6 +239,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+
+// config_handler - returns sanitized config as JSON (no passcode)
+async fn config_handler(State(config): State<PublicConfig>) -> Json<PublicConfig> {
+    Json(config)
+}
 
 // sse_handler
 async fn sse_handler(State(tx): State<broadcast::Sender<SSEEvent>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

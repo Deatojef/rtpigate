@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rtpigate - APRS iGate</title>
+    <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+    <header>
+        <h1 id="header-title">rtpigate</h1>
+        <div id="status-bar">
+            <span id="sse-status" class="status-indicator disconnected">SSE</span>
+            <span id="rtp-status" class="status-indicator unknown">KA9Q</span>
+            <span id="aprsis-status" class="status-indicator unknown">APRS-IS</span>
+        </div>
+    </header>
+
+    <main>
+        <section id="config-panel">
+            <h2>Station Configuration</h2>
+            <div id="config-grid"></div>
+        </section>
+
+        <section id="statistics">
+            <div class="stat-group">
+                <h2>RF Packets <span class="stat-interval">(15s intervals)</span></h2>
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <span class="stat-label">Total</span>
+                        <span id="stat-rf-total" class="stat-value">--</span>
+                        <canvas id="spark-rf-total" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Direct</span>
+                        <span id="stat-rf-direct" class="stat-value">--</span>
+                        <canvas id="spark-rf-direct" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Errors</span>
+                        <span id="stat-rf-errors" class="stat-value">--</span>
+                        <canvas id="spark-rf-errors" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-group">
+                <h2>APRS-IS <span class="stat-interval">(15s intervals)</span></h2>
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <span class="stat-label">RF Rx</span>
+                        <span id="stat-aprsis-rf" class="stat-value">--</span>
+                        <canvas id="spark-aprsis-rf" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Inet Rx</span>
+                        <span id="stat-aprsis-inet" class="stat-value">--</span>
+                        <canvas id="spark-aprsis-inet" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Igated</span>
+                        <span id="stat-aprsis-igated" class="stat-value">--</span>
+                        <canvas id="spark-aprsis-igated" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Dropped</span>
+                        <span id="stat-aprsis-dropped" class="stat-value">--</span>
+                        <canvas id="spark-aprsis-dropped" class="sparkline" width="150" height="40"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="packets">
+            <h2>Recent Packets</h2>
+            <table id="packet-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th></th>
+                        <th>Source</th>
+                        <th>Freq</th>
+                        <th>Direct</th>
+                        <th>Satellite</th>
+                        <th>Coordinates</th>
+                        <th>Packet</th>
+                    </tr>
+                </thead>
+                <tbody id="packet-body">
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="/assets/aprssymbols/symbols-map.js"></script>
+    <script src="/assets/app.js"></script>
+</body>
+</html>

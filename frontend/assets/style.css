@@ -1,0 +1,291 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background-color: #606060;
+    color: #ffffff;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 14px;
+    padding: 8px;
+}
+
+header {
+    background-color: #303030;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+header h1 {
+    font-size: 1.4em;
+    font-weight: bold;
+}
+
+#status-bar {
+    display: flex;
+    gap: 12px;
+}
+
+.status-indicator {
+    font-size: 0.85em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+.status-indicator.connected {
+    background-color: #2e7d32;
+    color: #fff;
+}
+
+.status-indicator.disconnected {
+    background-color: #c62828;
+    color: #fff;
+}
+
+.status-indicator.unknown {
+    background-color: #555;
+    color: #aaa;
+}
+
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Config panel */
+#config-panel {
+    background-color: #303030;
+    padding: 8px 12px;
+    border-radius: 4px;
+}
+
+#config-panel h2 {
+    font-variant: small-caps;
+    font-size: 1.2em;
+    color: #c8c8c8;
+    margin-bottom: 6px;
+    border-bottom: 1px solid #505050;
+    padding-bottom: 4px;
+}
+
+#config-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 24px;
+}
+
+.config-item {
+    display: flex;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.config-label {
+    color: #aaa;
+    font-size: 0.85em;
+    font-variant: small-caps;
+}
+
+.config-value {
+    color: #fff;
+    font-size: 0.85em;
+}
+
+.config-value.config-enabled {
+    background-color: #2e7d32;
+    padding: 0 4px;
+    border-radius: 2px;
+}
+
+/* Statistics */
+#statistics {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.stat-group {
+    background-color: #303030;
+    padding: 8px 12px;
+    border-radius: 4px;
+    flex: 1;
+    min-width: 250px;
+}
+
+.stat-group h2 {
+    font-variant: small-caps;
+    font-size: 1.2em;
+    color: #c8c8c8;
+    margin-bottom: 6px;
+    border-bottom: 1px solid #505050;
+    padding-bottom: 4px;
+}
+
+.stat-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stat-label {
+    font-size: 0.8em;
+    color: #aaa;
+    font-variant: small-caps;
+}
+
+.stat-value {
+    font-size: 1.3em;
+    font-weight: bold;
+    color: #fff;
+}
+
+.stat-interval {
+    font-variant: normal;
+    font-size: 0.7em;
+    color: #777;
+    font-weight: normal;
+}
+
+.sparkline {
+    display: block;
+    margin-top: 4px;
+    border-radius: 3px;
+    background-color: #252525;
+}
+
+/* Packets */
+#packets {
+    background-color: #303030;
+    padding: 8px 12px;
+    border-radius: 4px;
+}
+
+#packets h2 {
+    font-variant: small-caps;
+    font-size: 1.2em;
+    color: #c8c8c8;
+    margin-bottom: 6px;
+    border-bottom: 1px solid #505050;
+    padding-bottom: 4px;
+}
+
+#packet-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+#packet-table thead th {
+    font-variant: small-caps;
+    font-size: 1.0em;
+    color: #c8c8c8;
+    text-align: left;
+    padding: 2px 6px;
+    font-weight: normal;
+}
+
+/* Fixed column widths using ch units (character widths in monospace) */
+#packet-table th:nth-child(1) { width: 9ch; }               /* Time: HH:MM:SS */
+#packet-table th:nth-child(2) { width: 3ch; }               /* Symbol icon */
+#packet-table th:nth-child(3) { width: 10ch; }              /* Source callsign */
+#packet-table th:nth-child(4) { width: 8ch; }               /* Freq: 144.390 */
+#packet-table th:nth-child(5) { width: 7ch; text-align: center; }   /* Direct */
+#packet-table th:nth-child(6) { width: 10ch; text-align: center; }  /* Satellite */
+#packet-table th:nth-child(7) { width: 30ch; }              /* Coordinates */
+/* th:nth-child(8) Packet gets remaining space */
+
+#packet-table tbody td {
+    padding: 2px 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#packet-table tbody tr {
+    border-bottom: 1px solid #404040;
+}
+
+#packet-table tbody tr:hover {
+    background-color: #404040;
+}
+
+/* Packet source type indicators */
+td.pkt-time {
+    color: #aaa;
+    font-size: 0.9em;
+}
+
+td.pkt-symbol {
+    width: 20px;
+    text-align: center;
+}
+
+td.pkt-symbol img {
+    height: 16px;
+    width: 16px;
+    vertical-align: middle;
+}
+
+td.pkt-source {
+    font-weight: bold;
+}
+
+td.pkt-freq {
+    color: #aaa;
+    font-size: 0.9em;
+}
+
+td.pkt-direct,
+td.pkt-sat {
+    font-size: 0.9em;
+    color: #aaa;
+    text-align: center;
+}
+
+.highlight-true {
+    background-color: #2e7d32;
+    color: #fff;
+    padding: 1px 4px;
+    border-radius: 2px;
+}
+
+td.pkt-coords {
+    font-size: 0.9em;
+    color: #c8c8c8;
+}
+
+td.pkt-coords .pkt-distance {
+    color: #aaa;
+}
+
+td.pkt-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+tr.rf-packet td.pkt-source {
+    color: #81d4fa;
+}
+
+tr.inet-packet td.pkt-source {
+    color: #a5d6a7;
+}
+
+tr.inet-packet td.pkt-freq {
+    color: #505050;
+}

@@ -16,5 +16,6 @@ ax25 = "0.3.0"
 socket2 = "0.6.0"
 tokio-util = "0.7.16"
 axum = { version = "0.8.4", features = ["json"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 aprs-parser = { path = "vendor/aprs-parser-rs" }
