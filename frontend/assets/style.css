@@ -346,6 +346,8 @@ td.pkt-coords .pkt-distance {
 td.pkt-text {
     overflow: hidden;
     text-overflow: ellipsis;
+    color: var(--text-muted);
+    max-width: 0;
 }
 
 tr.rf-packet td.pkt-source {
@@ -421,7 +423,8 @@ tr.rf-packet td.pkt-source {
     color: var(--rf-color);
 }
 
-#heard-table td:nth-child(3) {
+#heard-table td:nth-child(3),
+#heard-table td:nth-child(4) {
     color: var(--text-muted);
     font-size: 0.9em;
 }
