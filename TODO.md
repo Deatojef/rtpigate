@@ -20,7 +20,7 @@
 ## Operational
 - [ ] Systemd service file — .service unit for running as a daemon on the Pi with auto-restart
 - [x] Config file validation — validate all required fields at startup with clear error messages
-- [ ] Signal-based config reload — SIGHUP to re-read config.toml without restarting
+- [x] Signal-based config reload — SIGHUP re-reads and validates config.toml, updates frontend config
 
 ## Code Quality
 - [ ] Tests — unit tests for droppacket(), positpacket(), passcode(), rfonly/heard-direct detection, telemetry encoding

@@ -137,6 +137,79 @@
         });
     }
 
+    // ---- Apply config to UI ----
+
+    function applyConfig(cfg) {
+        // Set station location for distance calculations
+        if (cfg.location && cfg.location.lat != null && cfg.location.lon != null) {
+            stationLat = cfg.location.lat;
+            stationLon = cfg.location.lon;
+        }
+
+        // Update title bar with callsign and station name
+        var titleEl = document.getElementById("header-title");
+        var callsign = cfg.station && cfg.station.callsign ? cfg.station.callsign : "";
+        var name = cfg.station && cfg.station.name ? cfg.station.name : "";
+        if (callsign && name) {
+            titleEl.textContent = callsign + " - " + name;
+            document.title = callsign + " - " + name;
+        } else if (callsign) {
+            titleEl.textContent = callsign + " iGate";
+            document.title = callsign + " iGate";
+        }
+
+        // Start uptime timer
+        if (cfg.started_at) {
+            startedAt = new Date(cfg.started_at);
+            if (!uptimeTimer) {
+                uptimeTimer = setInterval(updateUptime, 1000);
+                updateUptime();
+            }
+        }
+
+        // Populate config panel
+        var grid = document.getElementById("config-grid");
+        grid.innerHTML = "";
+
+        var items = [];
+        if (cfg.location) {
+            if (cfg.location.lat != null && cfg.location.lon != null) {
+                items.push(["Coordinates", cfg.location.lat.toFixed(6) + ", " + cfg.location.lon.toFixed(6)]);
+            }
+            if (cfg.location.alt != null) items.push(["Altitude", cfg.location.alt + " ft"]);
+        }
+        if (cfg.aprsis) {
+            if (cfg.aprsis.host) items.push(["APRS-IS Host", cfg.aprsis.host + ":" + (cfg.aprsis.port || 14580)]);
+            if (cfg.aprsis.enabled != null) items.push(["APRS-IS", cfg.aprsis.enabled ? "Enabled" : "Disabled"]);
+            if (cfg.aprsis.igating != null) items.push(["Igating", cfg.aprsis.igating ? "Enabled" : "Disabled"]);
+            if (cfg.aprsis.beaconing != null) items.push(["Beaconing", cfg.aprsis.beaconing ? "Enabled" : "Disabled"]);
+            if (cfg.aprsis.threshold) items.push(["Beacon Interval", (cfg.aprsis.threshold / 60) + " min"]);
+        }
+        if (cfg.rtp) {
+            items.push(["RTP Multicast", cfg.rtp.host + ":" + cfg.rtp.port]);
+        }
+
+        for (var i = 0; i < items.length; i++) {
+            var div = document.createElement("div");
+            div.className = "config-item";
+
+            var label = document.createElement("span");
+            label.className = "config-label";
+            label.textContent = items[i][0] + ":";
+            div.appendChild(label);
+
+            var value = document.createElement("span");
+            value.className = "config-value";
+            if (items[i][1] === "Enabled") {
+                value.classList.add("config-enabled");
+            }
+            value.textContent = items[i][1];
+            div.appendChild(value);
+
+            grid.appendChild(div);
+        }
+    }
+
     // ---- Fetch station config ----
 
     function fetchConfig() {
@@ -144,76 +217,7 @@
         xhr.open("GET", "/api/config", true);
         xhr.onload = function () {
             if (xhr.status !== 200) return;
-            var cfg = JSON.parse(xhr.responseText);
-
-            // Set station location for distance calculations
-            if (cfg.location && cfg.location.lat != null && cfg.location.lon != null) {
-                stationLat = cfg.location.lat;
-                stationLon = cfg.location.lon;
-            }
-
-            // Update title bar with callsign and station name
-            var titleEl = document.getElementById("header-title");
-            var callsign = cfg.station && cfg.station.callsign ? cfg.station.callsign : "";
-            var name = cfg.station && cfg.station.name ? cfg.station.name : "";
-            if (callsign && name) {
-                titleEl.textContent = callsign + " - " + name;
-                document.title = callsign + " - " + name;
-            } else if (callsign) {
-                titleEl.textContent = callsign + " iGate";
-                document.title = callsign + " iGate";
-            }
-
-            // Start uptime timer
-            if (cfg.started_at) {
-                startedAt = new Date(cfg.started_at);
-                if (!uptimeTimer) {
-                    uptimeTimer = setInterval(updateUptime, 1000);
-                    updateUptime();
-                }
-            }
-
-            // Populate config panel
-            var grid = document.getElementById("config-grid");
-            grid.innerHTML = "";
-
-            var items = [];
-            if (cfg.location) {
-                if (cfg.location.lat != null && cfg.location.lon != null) {
-                    items.push(["Coordinates", cfg.location.lat.toFixed(6) + ", " + cfg.location.lon.toFixed(6)]);
-                }
-                if (cfg.location.alt != null) items.push(["Altitude", cfg.location.alt + " ft"]);
-            }
-            if (cfg.aprsis) {
-                if (cfg.aprsis.host) items.push(["APRS-IS Host", cfg.aprsis.host + ":" + (cfg.aprsis.port || 14580)]);
-                if (cfg.aprsis.enabled != null) items.push(["APRS-IS", cfg.aprsis.enabled ? "Enabled" : "Disabled"]);
-                if (cfg.aprsis.igating != null) items.push(["Igating", cfg.aprsis.igating ? "Enabled" : "Disabled"]);
-                if (cfg.aprsis.beaconing != null) items.push(["Beaconing", cfg.aprsis.beaconing ? "Enabled" : "Disabled"]);
-                if (cfg.aprsis.threshold) items.push(["Beacon Interval", (cfg.aprsis.threshold / 60) + " min"]);
-            }
-            if (cfg.rtp) {
-                items.push(["RTP Multicast", cfg.rtp.host + ":" + cfg.rtp.port]);
-            }
-
-            for (var i = 0; i < items.length; i++) {
-                var div = document.createElement("div");
-                div.className = "config-item";
-
-                var label = document.createElement("span");
-                label.className = "config-label";
-                label.textContent = items[i][0] + ":";
-                div.appendChild(label);
-
-                var value = document.createElement("span");
-                value.className = "config-value";
-                if (items[i][1] === "Enabled") {
-                    value.classList.add("config-enabled");
-                }
-                value.textContent = items[i][1];
-                div.appendChild(value);
-
-                grid.appendChild(div);
-            }
+            applyConfig(JSON.parse(xhr.responseText));
         };
         xhr.send();
     }
@@ -666,6 +670,12 @@
             destroyES();
             scheduleReconnect();
         };
+
+        es.addEventListener("config", function (e) {
+            onMessage();
+            var cfg = JSON.parse(e.data);
+            applyConfig(cfg);
+        });
 
         es.addEventListener("rfpacket", function (e) {
             onMessage();

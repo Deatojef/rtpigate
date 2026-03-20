@@ -11,7 +11,7 @@ use tokio::{sync::broadcast, task::JoinSet};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 use tokio_stream::{Stream, wrappers::BroadcastStream, StreamExt};
-use std::{sync::Arc, error::Error, convert::Infallible};
+use std::{sync::{Arc, RwLock}, error::Error, convert::Infallible};
 use chrono::Local;
 
 // for logging
@@ -37,7 +37,7 @@ use sse::{sse_task, SSEEvent};
 #[derive(Clone)]
 struct AppState {
     sse_channel: broadcast::Sender<SSEEvent>,
-    public_config: PublicConfig,
+    public_config: Arc<RwLock<PublicConfig>>,
 }
 
 impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
@@ -46,7 +46,7 @@ impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
     }
 }
 
-impl FromRef<AppState> for PublicConfig {
+impl FromRef<AppState> for Arc<RwLock<PublicConfig>> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.public_config.clone()
     }
@@ -200,10 +200,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // the application state
         let mut public_config = shared_config.to_public();
-        public_config.started_at = Some(Local::now());
+        let started_at = Local::now();
+        public_config.started_at = Some(started_at);
+        let shared_public_config = Arc::new(RwLock::new(public_config));
+        let sse_tx_for_reload = sse_tx.clone();
         let app_state = AppState {
             sse_channel: sse_tx,
-            public_config,
+            public_config: shared_public_config.clone(),
         };
 
         // create a new Router
@@ -221,33 +224,80 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let addr = &listener.local_addr()?;
 
-        // The axum http server.
-        let server = axum::serve(listener, app);
+        // The axum http server (converted to future and pinned for select loop)
+        let server = axum::serve(listener, app).into_future();
+        tokio::pin!(server);
 
         info!("Listening on http://{}/api/sse", addr);
 
         let mut sigterm_stream = signal(SignalKind::terminate())?;
         let mut sigint_stream = signal(SignalKind::interrupt())?;
+        let mut sighup_stream = signal(SignalKind::hangup())?;
 
         // wait for either the server to shutdown, a signal, or a task exit
-        tokio::select! {
+        loop {
+            tokio::select! {
 
-            // the http server
-            _ = server => {
-                info!("Server on http://{}/api/sse shutdown", addr);
-            },
+                // the http server
+                _ = &mut server => {
+                    info!("Server on http://{}/api/sse shutdown", addr);
+                    break;
+                },
 
-            // signals
-            _ = sigint_stream.recv() => warn!("Received interrupt signal, application shutting down..."),
-            _ = sigterm_stream.recv() => warn!("Received termination signal, application shutting down..."),
+                // shutdown signals
+                _ = sigint_stream.recv() => {
+                    warn!("Received interrupt signal, application shutting down...");
+                    break;
+                },
+                _ = sigterm_stream.recv() => {
+                    warn!("Received termination signal, application shutting down...");
+                    break;
+                },
 
-            // monitor background task health
-            result = task_set.join_next() => {
-                if let Some(result) = result {
-                    match result {
-                        Ok(()) => warn!("A background task exited unexpectedly"),
-                        Err(e) => error!("A background task panicked: {}", e),
+                // SIGHUP: reload configuration
+                _ = sighup_stream.recv() => {
+                    info!("Received SIGHUP, reloading configuration from {}...", config_path);
+                    match Config::from_file(config_path) {
+                        Ok(new_config) => {
+                            let errors = new_config.validate();
+                            if !errors.is_empty() {
+                                for err in &errors {
+                                    error!("Config reload error: {}", err);
+                                }
+                                warn!("Config reload failed validation, keeping current config.");
+                            } else {
+                                let mut new_public = new_config.to_public();
+                                new_public.started_at = Some(started_at);
+                                match shared_public_config.write() {
+                                    Ok(mut cfg) => {
+                                        *cfg = new_public.clone();
+                                        info!("Configuration reloaded successfully.");
+                                        // push config update to connected browsers via SSE
+                                        let config_json = serde_json::json!(new_public);
+                                        let _ = sse_tx_for_reload.send(SSEEvent {
+                                            event: String::from("config"),
+                                            data: config_json,
+                                        });
+                                    },
+                                    Err(e) => error!("Failed to update config: {}", e),
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to read {}: {}. Keeping current config.", config_path, e);
+                        }
                     }
+                },
+
+                // monitor background task health
+                result = task_set.join_next() => {
+                    if let Some(result) = result {
+                        match result {
+                            Ok(()) => warn!("A background task exited unexpectedly"),
+                            Err(e) => error!("A background task panicked: {}", e),
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -265,8 +315,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
 // config_handler - returns sanitized config as JSON (no passcode)
-async fn config_handler(State(config): State<PublicConfig>) -> Json<PublicConfig> {
-    Json(config)
+async fn config_handler(State(config): State<Arc<RwLock<PublicConfig>>>) -> Json<PublicConfig> {
+    let cfg = config.read().unwrap().clone();
+    Json(cfg)
 }
 
 // sse_handler
