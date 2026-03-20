@@ -19,7 +19,7 @@
 
 ## Operational
 - [ ] Systemd service file — .service unit for running as a daemon on the Pi with auto-restart
-- [ ] Config file validation — validate all required fields at startup with clear error messages
+- [x] Config file validation — validate all required fields at startup with clear error messages
 - [ ] Signal-based config reload — SIGHUP to re-read config.toml without restarting
 
 ## Code Quality

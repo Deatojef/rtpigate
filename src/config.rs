@@ -171,6 +171,71 @@ impl Config {
         Ok(toml::from_str::<Config>(&toml_string)?)
     }
 
+    /// Validate configuration, returning a list of error messages.
+    /// An empty list means the config is valid.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Station callsign is always required
+        match &self.station.callsign {
+            Some(c) if c.is_empty() => errors.push("[station] callsign is empty".into()),
+            None => errors.push("[station] callsign is required".into()),
+            _ => {},
+        }
+
+        // RTP host/port are required (already non-optional in the struct, but validate content)
+        if self.rtp.host.is_empty() {
+            errors.push("[rtp] host is required".into());
+        }
+        if self.rtp.port == 0 {
+            errors.push("[rtp] port must be > 0".into());
+        }
+
+        // Location validation — lat/lon ranges
+        if let Some(lat) = self.location.lat {
+            if !(-90.0..=90.0).contains(&lat) {
+                errors.push(format!("[location] lat {} is out of range (-90 to 90)", lat));
+            }
+        }
+        if let Some(lon) = self.location.lon {
+            if !(-180.0..=180.0).contains(&lon) {
+                errors.push(format!("[location] lon {} is out of range (-180 to 180)", lon));
+            }
+        }
+
+        // If APRS-IS is enabled, validate its required fields
+        if self.aprsis.enabled == Some(true) {
+            match &self.aprsis.host {
+                Some(h) if h.is_empty() => errors.push("[aprsis] host is empty but aprsis is enabled".into()),
+                None => errors.push("[aprsis] host is required when aprsis is enabled".into()),
+                _ => {},
+            }
+            if self.aprsis.port.is_none() {
+                errors.push("[aprsis] port is required when aprsis is enabled".into());
+            }
+
+            // If beaconing is enabled, location is required
+            if self.aprsis.beaconing == Some(true) {
+                if self.location.lat.is_none() || self.location.lon.is_none() {
+                    errors.push("[location] lat and lon are required when beaconing is enabled".into());
+                }
+                if self.location.alt.is_none() {
+                    errors.push("[location] alt is required when beaconing is enabled".into());
+                }
+            }
+        }
+
+        // HTTP listen address validation
+        if let Some(ref http) = self.http {
+            if let Some(ref listen) = http.listen {
+                if !listen.contains(':') {
+                    errors.push(format!("[http] listen '{}' should be in host:port format", listen));
+                }
+            }
+        }
+
+        errors
+    }
 }
 
 impl APRSISLogin for Config {

@@ -94,6 +94,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     debug!("Configuration: {:?}", config);
 
+    // validate configuration
+    let validation_errors = config.validate();
+    if !validation_errors.is_empty() {
+        for err in &validation_errors {
+            error!("Config error: {}", err);
+        }
+        error!("Fix the above configuration errors in {} and restart.", config_path);
+        std::process::exit(1);
+    }
+
     // validate passcode if APRS-IS is enabled with igating or beaconing
     if config.aprsis.enabled == Some(true) {
         let needs_write = config.aprsis.igating == Some(true) || config.aprsis.beaconing == Some(true);
