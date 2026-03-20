@@ -398,4 +398,4 @@ This tags the version, builds the `.deb` package via `cargo-deb`, and creates a 
 
 ## License
 
-MIT
+GPL-3.0
