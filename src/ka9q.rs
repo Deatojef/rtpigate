@@ -8,6 +8,7 @@ use chrono::{DateTime, Local, Utc};
 use ax25::frame::{Ax25Frame, FrameContent};
 
 use log::{info, warn, error, debug};
+use aprs_parser::{AprsPacket, AprsData};
 
 use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem};
 
@@ -44,6 +45,11 @@ pub struct RTPPacket {
 
     // was this packet heard from or perhaps, destined to a satellite?
     pub is_satellite: bool,
+
+    // parsed position data (if available)
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub altitude_ft: Option<f64>,
 }
 
 impl fmt::Display for RTPPacket {
@@ -443,6 +449,34 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 None => return Err(Box::new(io::Error::new(ErrorKind::Other, "No APRS data type found.".to_string()))),
             };
 
+            // attempt to parse position data using aprs-parser-rs
+            let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
+            if let Ok(parsed) = AprsPacket::decode_textual(aprstext.as_bytes()) {
+                match parsed.data {
+                    AprsData::Position(pos) => {
+                        latitude = Some(*pos.position.latitude);
+                        longitude = Some(*pos.position.longitude);
+                        // check for altitude in comment (/A=NNNNNN)
+                        let comment = String::from_utf8_lossy(&pos.comment);
+                        if let Some(alt_idx) = comment.find("/A=") {
+                            let alt_str = &comment[alt_idx + 3..];
+                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
+                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
+                                altitude_ft = Some(alt);
+                            }
+                        }
+                    },
+                    AprsData::MicE(mice) => {
+                        latitude = Some(*mice.latitude);
+                        longitude = Some(*mice.longitude);
+                        if let Some(alt) = mice.altitude {
+                            altitude_ft = Some(alt.altitude_feet());
+                        }
+                    },
+                    _ => {},
+                }
+            }
+
             // return a new Packet structure
             Ok(RTPPacket {
                 receivetime,
@@ -457,6 +491,9 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 destination,
                 raw: aprstext,
                 info,
+                latitude,
+                longitude,
+                altitude_ft,
             })
         },
         Err(e) => Err(Box::new(io::Error::new(ErrorKind::Other, format!("No RTP packet payload to parse: {:?}", e)))),

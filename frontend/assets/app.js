@@ -442,10 +442,15 @@
         }
         tr.appendChild(tdSat);
 
-        // Coordinates
+        // Coordinates — prefer backend-parsed position, fall back to JS parser
         var tdCoords = document.createElement("td");
         tdCoords.className = "pkt-coords";
-        var pos = parsePosition(data.info);
+        var pos = null;
+        if (data.latitude != null && data.longitude != null) {
+            pos = { lat: data.latitude, lon: data.longitude };
+        } else {
+            pos = parsePosition(data.info);
+        }
         if (pos) {
             var coordText = pos.lat.toFixed(6) + ", " + pos.lon.toFixed(6);
             tdCoords.textContent = coordText;
