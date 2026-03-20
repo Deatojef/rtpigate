@@ -129,6 +129,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut dedup_cache: HashMap<String, i64> = HashMap::new();
     const DEDUP_TTL_SECS: i64 = 30;
 
+    // APRS-IS connection tracking
+    let mut total_reconnects: u32 = 0;
+    let mut reconnects_this_interval: u32 = 0;
+    let mut first_connect = true;
+
     // backoff state for reconnection
     let mut backoff_secs: u64 = 5;
     const MAX_BACKOFF_SECS: u64 = 300;
@@ -184,6 +189,15 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
         // reset backoff on successful connection
         backoff_secs = 5;
+
+        // track reconnects (skip the initial connection)
+        if first_connect {
+            first_connect = false;
+        } else {
+            total_reconnects += 1;
+            reconnects_this_interval += 1;
+            info!("APRS-IS reconnected (total reconnects: {})", total_reconnects);
+        }
 
         // split the socket into read and write halves
         let (read_half, mut write_half) = socket.into_split();
@@ -251,7 +265,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                     inet_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_inet_received });
                     dropped_series.data.push_back(DataPoint { timestamp: the_time, value: packets_dropped });
                     igated_series.data.push_back(DataPoint { timestamp: the_time, value: packets_igated });
-                    reconnect_series.data.push_back(DataPoint { timestamp: the_time, value: 0 });
+                    reconnect_series.data.push_back(DataPoint { timestamp: the_time, value: reconnects_this_interval });
 
                     // trim series to max 100 data points
                     for series in [&mut rf_received_series, &mut inet_received_series, &mut dropped_series, &mut igated_series, &mut reconnect_series] {
@@ -283,6 +297,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                     packets_igated = 0;
                     stats_rf_received = 0;
                     stats_inet_received = 0;
+                    reconnects_this_interval = 0;
                 },
 
                 // check if there's anything we can read from the APRS-IS server

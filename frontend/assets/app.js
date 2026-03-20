@@ -18,9 +18,124 @@
     var statRfDirect = document.getElementById("stat-rf-direct");
     var statRfErrors = document.getElementById("stat-rf-errors");
     var statAprsisRf = document.getElementById("stat-aprsis-rf");
-    var statAprsisInet = document.getElementById("stat-aprsis-inet");
     var statAprsisIgated = document.getElementById("stat-aprsis-igated");
     var statAprsisDropped = document.getElementById("stat-aprsis-dropped");
+    var statAprsisReconnects = document.getElementById("stat-aprsis-reconnects");
+
+    // Uptime
+    var uptimeEl = document.getElementById("uptime");
+    var startedAt = null;
+    var uptimeTimer = null;
+
+    // Last heard stations: { callsign: { time, freq, direct, via, count } }
+    var lastHeard = {};
+    var heardBody = document.getElementById("heard-body");
+
+
+    // ---- Uptime display ----
+
+    function updateUptime() {
+        if (!startedAt) return;
+        var diff = Math.floor((Date.now() - startedAt.getTime()) / 1000);
+        var days = Math.floor(diff / 86400);
+        var hours = Math.floor((diff % 86400) / 3600);
+        var mins = Math.floor((diff % 3600) / 60);
+        var secs = diff % 60;
+        var parts = [];
+        if (days > 0) parts.push(days + "d");
+        parts.push(String(hours).padStart(2, "0") + "h");
+        parts.push(String(mins).padStart(2, "0") + "m");
+        parts.push(String(secs).padStart(2, "0") + "s");
+        uptimeEl.textContent = "up " + parts.join(" ");
+    }
+
+    // ---- Last heard stations ----
+
+    function updateLastHeard(data) {
+        var call = data.source;
+        if (!lastHeard[call]) {
+            lastHeard[call] = { time: null, freq: 0, lat: null, lon: null, count: 0 };
+        }
+        var entry = lastHeard[call];
+        entry.time = data.receivetime;
+        entry.freq = data.frequency;
+        entry.count += 1;
+
+        // update position if available
+        if (data.latitude != null && data.longitude != null) {
+            entry.lat = data.latitude;
+            entry.lon = data.longitude;
+        }
+
+        renderLastHeard();
+    }
+
+    function renderLastHeard() {
+        // Sort by most recent first
+        var calls = Object.keys(lastHeard);
+        calls.sort(function (a, b) {
+            return new Date(lastHeard[b].time) - new Date(lastHeard[a].time);
+        });
+
+        heardBody.innerHTML = "";
+        for (var i = 0; i < calls.length; i++) {
+            var call = calls[i];
+            var e = lastHeard[call];
+            var tr = document.createElement("tr");
+
+            var tdCall = document.createElement("td");
+            tdCall.textContent = call;
+            tr.appendChild(tdCall);
+
+            var tdTime = document.createElement("td");
+            tdTime.textContent = formatTime(e.time);
+            tr.appendChild(tdTime);
+
+            var tdFreq = document.createElement("td");
+            tdFreq.textContent = e.freq.toFixed(3);
+            tr.appendChild(tdFreq);
+
+            var tdCoords = document.createElement("td");
+            tdCoords.className = "heard-coords";
+            if (e.lat != null && e.lon != null) {
+                var coordText = e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
+                tdCoords.textContent = coordText;
+                if (stationLat !== null && stationLon !== null) {
+                    var dist = haversineDistance(stationLat, stationLon, e.lat, e.lon);
+                    var distSpan = document.createElement("span");
+                    distSpan.className = "pkt-distance";
+                    distSpan.textContent = " (" + Math.round(dist) + "mi)";
+                    tdCoords.appendChild(distSpan);
+                }
+            } else {
+                tdCoords.textContent = "--";
+            }
+            tr.appendChild(tdCoords);
+
+            var tdCount = document.createElement("td");
+            tdCount.textContent = e.count;
+            tr.appendChild(tdCount);
+
+            heardBody.appendChild(tr);
+        }
+    }
+
+    // ---- Theme toggle ----
+
+    function setupThemeToggle() {
+        var btn = document.getElementById("theme-toggle");
+        var saved = localStorage.getItem("theme");
+        if (saved === "light") {
+            document.body.classList.add("light");
+            btn.textContent = "Dark";
+        }
+        btn.addEventListener("click", function () {
+            document.body.classList.toggle("light");
+            var isLight = document.body.classList.contains("light");
+            btn.textContent = isLight ? "Dark" : "Light";
+            localStorage.setItem("theme", isLight ? "light" : "dark");
+        });
+    }
 
     // ---- Fetch station config ----
 
@@ -47,6 +162,15 @@
             } else if (callsign) {
                 titleEl.textContent = callsign + " iGate";
                 document.title = callsign + " iGate";
+            }
+
+            // Start uptime timer
+            if (cfg.started_at) {
+                startedAt = new Date(cfg.started_at);
+                if (!uptimeTimer) {
+                    uptimeTimer = setInterval(updateUptime, 1000);
+                    updateUptime();
+                }
             }
 
             // Populate config panel
@@ -547,6 +671,7 @@
             onMessage();
             var data = JSON.parse(e.data);
             addPacketRow("rf", data);
+            updateLastHeard(data);
             setStatus(rtpStatus, "connected");
         });
 
@@ -573,18 +698,19 @@
             onMessage();
             var data = JSON.parse(e.data);
             statAprsisRf.textContent = latestValue(data.rf_received);
-            statAprsisInet.textContent = latestValue(data.inet_received);
             statAprsisIgated.textContent = latestValue(data.packets_igated);
             statAprsisDropped.textContent = latestValue(data.packets_dropped);
+            statAprsisReconnects.textContent = latestValue(data.reconnects);
             drawSparkline("spark-aprsis-rf", data.rf_received, "#81d4fa");
-            drawSparkline("spark-aprsis-inet", data.inet_received, "#a5d6a7");
             drawSparkline("spark-aprsis-igated", data.packets_igated, "#fff176");
             drawSparkline("spark-aprsis-dropped", data.packets_dropped, "#ef9a9a");
+            drawSparkline("spark-aprsis-reconnects", data.reconnects, "#ce93d8");
             setStatus(aprsisStatus, "connected");
         });
     }
 
     // Start
+    setupThemeToggle();
     fetchConfig();
     connectSSE();
 })();

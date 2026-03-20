@@ -7,15 +7,15 @@
 - [x] Fix igating filters: add TCPXX to rfonly, add query (?) drop, fix third-party (}) check
 
 ## Observability
-- [ ] Uptime display — show how long the application has been running in the config panel
-- [ ] Last-heard table — track unique callsigns with last-heard time, frequency, direct/digi status
-- [ ] APRS-IS connection state in telemetry — current connection duration and total reconnect count
+- [x] Uptime display — live timer in header from backend start time
+- [x] Last-heard table — tracks unique RF callsigns with time, freq, direct/via, count
+- [x] APRS-IS connection state — reconnect counter with sparkline in stats panel
 
 ## Frontend
 - [x] Mic-E position decoding — done via aprs-parser-rs on backend
-- [ ] Packet type filtering — toggles to show/hide RF vs internet packets, or filter by frequency
-- [ ] Dark/light theme toggle — CSS variable swap
-- [ ] Responsive mobile layout — card-based layout for narrow screens
+- [x] Packet type filtering — All/RF/Inet toggle buttons
+- [x] Dark/light theme toggle — CSS variables with localStorage persistence
+- [x] Responsive mobile layout — hides non-essential columns on narrow screens
 
 ## Operational
 - [ ] Systemd service file — .service unit for running as a daemon on the Pi with auto-restart

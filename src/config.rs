@@ -124,6 +124,7 @@ pub struct PublicConfig {
     pub location: Location,
     pub aprsis: AprsisConfigPublic,
     pub rtp: RtpConfig,
+    pub started_at: Option<DateTime<Local>>,
 }
 
 impl Config {
@@ -142,6 +143,7 @@ impl Config {
                 threshold: self.aprsis.threshold,
             },
             rtp: self.rtp.clone(),
+            started_at: None,
         }
     }
 }

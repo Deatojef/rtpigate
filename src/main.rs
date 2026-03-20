@@ -12,6 +12,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 use tokio_stream::{Stream, wrappers::BroadcastStream, StreamExt};
 use std::{sync::Arc, error::Error, convert::Infallible};
+use chrono::Local;
 
 // for logging
 use flexi_logger::Logger;
@@ -188,9 +189,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if task_set.len() == expected_tasks {
 
         // the application state
+        let mut public_config = shared_config.to_public();
+        public_config.started_at = Some(Local::now());
         let app_state = AppState {
             sse_channel: sse_tx,
-            public_config: shared_config.to_public(),
+            public_config,
         };
 
         // create a new Router
