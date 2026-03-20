@@ -18,7 +18,7 @@ use flexi_logger::Logger;
 use log::{info, warn, error, debug};
 
 mod config;
-use config::{Config, DataItem, PublicConfig};
+use config::{Config, DataItem, PublicConfig, APRSISPasscode};
 
 mod ka9q;
 use ka9q::rtp_listener;
@@ -92,6 +92,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Verbose logging enabled");
     }
     debug!("Configuration: {:?}", config);
+
+    // validate passcode if APRS-IS is enabled with igating or beaconing
+    if config.aprsis.enabled == Some(true) {
+        let needs_write = config.aprsis.igating == Some(true) || config.aprsis.beaconing == Some(true);
+        if needs_write && !config.passcode_isvalid() {
+            error!("APRS-IS passcode is invalid for callsign {:?}. Igating and/or beaconing require a valid passcode.", config.station.callsign);
+            std::process::exit(1);
+        }
+    }
 
     // create a version of the configuration for sharing with other tasks
     let shared_config = Arc::new(config);

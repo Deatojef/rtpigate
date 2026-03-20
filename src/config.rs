@@ -173,10 +173,17 @@ impl APRSISLogin for Config {
             None => &String::from("N0CAL"),
         };
 
+        // Only send the real passcode if it's valid; otherwise send -1 for read-only
+        let passcode = if self.passcode_isvalid() {
+            match &self.aprsis.passcode { Some(m) => m.clone(), None => String::from("-1") }
+        } else {
+            String::from("-1")
+        };
+
         format!(
             "user {} pass {} vers {}\r\n",
             callsign,
-            match &self.aprsis.passcode { Some(m) => m.clone(), None => String::from("-1") },
+            passcode,
             "1.0",
         )
     }
