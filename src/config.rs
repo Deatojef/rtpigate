@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, ops::Add, error::Error};
+use std::{collections::VecDeque, fs, ops::Add, error::Error};
 use chrono::{DateTime, Local};
 
 use crate::ka9q::Packet;
@@ -41,7 +41,7 @@ pub struct AprsisTelemetry {
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct DataSeries<T: Add> {
     pub name: String,
-    pub data: Vec<DataPoint<T>>,
+    pub data: VecDeque<DataPoint<T>>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]

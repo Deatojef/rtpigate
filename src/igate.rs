@@ -39,9 +39,9 @@ pub fn droppacket(p: &RTPPacket) -> bool {
     // This check is more involved that the simple is_satellite field within the RTPPacket struct,
     // as we neeed to determine if this satellite packet was digipeated or not - we don't igate
     // satellite packets heard directly unless they were from the satellites themselves.
-    let sat_freqs = vec![145.825];
-    let known_sats = vec!["RS0ISS", "DP0SNX", "A55BTN"];
-    if p.heard_direct && sat_freqs.contains(&p.frequency) && !known_sats.contains(&p.source.as_str()) {
+    const SAT_FREQS: &[f64] = &[145.825];
+    const KNOWN_SATS: &[&str] = &["RS0ISS", "DP0SNX", "A55BTN"];
+    if p.heard_direct && SAT_FREQS.contains(&p.frequency) && !KNOWN_SATS.contains(&p.source.as_str()) {
         true
     }
 

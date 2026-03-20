@@ -1,6 +1,6 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{str, io::{self, ErrorKind}, net::ToSocketAddrs, sync::Arc, error::Error};
+use std::{collections::VecDeque, str, io::{self, ErrorKind}, sync::Arc, error::Error};
 use chrono::{Local, Utc};
 
 use log::{info, warn, debug};
@@ -33,11 +33,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut stats_inet_received: u32 = 0;
 
     // data series
-    let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: Vec::new() };
-    let mut inet_received_series = DataSeries { name: String::from("inet_received"), data: Vec::new() };
-    let mut dropped_series = DataSeries { name: String::from("packets_dropped"), data: Vec::new() };
-    let mut igated_series = DataSeries { name: String::from("packets_igated"), data: Vec::new() };
-    let mut reconnect_series = DataSeries { name: String::from("aprsis_reconnects"), data: Vec::new() };
+    let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: VecDeque::new() };
+    let mut inet_received_series = DataSeries { name: String::from("inet_received"), data: VecDeque::new() };
+    let mut dropped_series = DataSeries { name: String::from("packets_dropped"), data: VecDeque::new() };
+    let mut igated_series = DataSeries { name: String::from("packets_igated"), data: VecDeque::new() };
+    let mut reconnect_series = DataSeries { name: String::from("aprsis_reconnects"), data: VecDeque::new() };
 
     // the interval for when to send statistics
     let mut telemetry_interval = interval(Duration::from_secs(15));
@@ -137,11 +137,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
             break;
         }
 
-        // convert the address to socket address
-        let mut addrs = match address.to_socket_addrs() {
+        // resolve the address asynchronously (non-blocking DNS)
+        let mut addrs = match tokio::net::lookup_host(&address).await {
             Ok(a) => a,
             Err(e) => {
-                warn!("Unable to parse address, {}. {}. Retrying in {}s...", address, e, backoff_secs);
+                warn!("Unable to resolve address, {}. {}. Retrying in {}s...", address, e, backoff_secs);
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
@@ -241,16 +241,16 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                     let the_time = Local::now();
 
                     // add data points to series
-                    rf_received_series.data.push(DataPoint { timestamp: the_time, value: stats_rf_received });
-                    inet_received_series.data.push(DataPoint { timestamp: the_time, value: stats_inet_received });
-                    dropped_series.data.push(DataPoint { timestamp: the_time, value: packets_dropped });
-                    igated_series.data.push(DataPoint { timestamp: the_time, value: packets_igated });
-                    reconnect_series.data.push(DataPoint { timestamp: the_time, value: 0 });
+                    rf_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_rf_received });
+                    inet_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_inet_received });
+                    dropped_series.data.push_back(DataPoint { timestamp: the_time, value: packets_dropped });
+                    igated_series.data.push_back(DataPoint { timestamp: the_time, value: packets_igated });
+                    reconnect_series.data.push_back(DataPoint { timestamp: the_time, value: 0 });
 
                     // trim series to max 100 data points
                     for series in [&mut rf_received_series, &mut inet_received_series, &mut dropped_series, &mut igated_series, &mut reconnect_series] {
                         if series.data.len() > 100 {
-                            series.data.remove(0);
+                            series.data.pop_front();
                         }
                     }
 
@@ -312,11 +312,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                             if let Some(ptype) = info.chars().next() {
                                                                 let packet = InetPacket {
                                                                     receivetime: Local::now(),
-                                                                    info: format!("{}", info),
-                                                                    source: format!("{}", source),
+                                                                    info: info.to_owned(),
+                                                                    source: source.to_owned(),
                                                                     ptype: ptype as char,
-                                                                    raw: format!("{}", packet_text),
-                                                                    aprsaddress: format!("{}", &address),
+                                                                    raw: packet_text.to_owned(),
+                                                                    aprsaddress: address.clone(),
                                                                 };
 
                                                                 match data_channel.send(DataItem::Pkt(Packet::Inet(packet))) {

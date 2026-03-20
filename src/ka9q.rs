@@ -1,6 +1,6 @@
 use tokio::{net::UdpSocket, sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{io::{self, ErrorKind}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, error::Error, fmt};
+use std::{collections::VecDeque, io::{self, ErrorKind}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, error::Error, fmt};
 use rtp_rs::RtpReader;
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -177,19 +177,19 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
     let mut decode_errors = 0;
     let mut total_packets = 0;
 
-    // data series 
+    // data series
     let mut packets_series = DataSeries {
         name: String::from("total_packets"),
-        data: Vec::new(),
+        data: VecDeque::new(),
     };
     let mut heard_direct_series = DataSeries {
         name: String::from("heard_direct"),
-        data: Vec::new(),
+        data: VecDeque::new(),
     };
 
     let mut decode_errors_series = DataSeries {
         name: String::from("decode_errors"),
-        data: Vec::new(),
+        data: VecDeque::new(),
     };
 
     // the interval for when to send statistics
@@ -244,19 +244,19 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                     let the_time = Local::now();
 
                     // add data points to series
-                    packets_series.data.push(DataPoint { timestamp: the_time, value: total_packets, });
-                    heard_direct_series.data.push(DataPoint { timestamp: the_time, value: heard_direct, });
-                    decode_errors_series.data.push(DataPoint { timestamp: the_time, value: decode_errors, });
+                    packets_series.data.push_back(DataPoint { timestamp: the_time, value: total_packets, });
+                    heard_direct_series.data.push_back(DataPoint { timestamp: the_time, value: heard_direct, });
+                    decode_errors_series.data.push_back(DataPoint { timestamp: the_time, value: decode_errors, });
 
-                    // check that the length of the series is not longer than 100
+                    // trim series to max 100 data points
                     if packets_series.data.len() > 100 {
-                        packets_series.data.remove(0);
+                        packets_series.data.pop_front();
                     }
                     if heard_direct_series.data.len() > 100 {
-                        heard_direct_series.data.remove(0);
+                        heard_direct_series.data.pop_front();
                     }
                     if decode_errors_series.data.len() > 100 {
-                        decode_errors_series.data.remove(0);
+                        decode_errors_series.data.pop_front();
                     }
 
                     // get the current time
@@ -289,11 +289,11 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
 
                 // read from the socket
-                result = udp_socket.recv_from(&mut buf) => {
+                result = udp_socket.recv(&mut buf) => {
                     match result {
 
                         // read was successful
-                        Ok((num_bytes, _src_addr)) => {
+                        Ok(num_bytes) => {
                             match RtpReader::new(&buf[..num_bytes]) {
                                 Ok(rtp) => {
 
@@ -348,11 +348,16 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 }
 
 
+// Constant slices for packet classification — no heap allocation per packet
+const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
+const RFONLY_ADDRS: &[&str] = &["TCPIP", "RFONLY", "NOGATE"];
+const SAT_FREQS: &[f64] = &[145.825];
+
 // used to parse an incoming RTP packet (w/ AX25 payload) into various source, destination,
 // addresses, info fields.
 fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
 
-    // Attempt to parse the payload 
+    // Attempt to parse the payload
     match Ax25Frame::from_bytes(rtp.payload()) {
         Ok(ax25_frame) => {
 
@@ -368,90 +373,93 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 _ => return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz Not an AX.25 UI frame.", frequency)))),
             };
 
-            // start constructing the APRS packet
-            let source: String = format!("{}", ax25_frame.source);
-            let mut aprstext: String = format!("{}>{}", ax25_frame.source, ax25_frame.destination);
+            let source = ax25_frame.source.to_string();
+            let destination = ax25_frame.destination.to_string();
 
-            // construct the viapath for the APRS packet
-            let path_elements: Vec<String> = ax25_frame.route.iter().map(|p| p.repeater.to_string()).collect();
-            let viapath = path_elements.join(",");
-            aprstext = format!("{},{}", aprstext, viapath);
+            // stringify route elements once and reuse
+            let route_strings: Vec<(String, bool)> = ax25_frame.route.iter()
+                .map(|p| (p.repeater.to_string(), p.has_repeated))
+                .collect();
 
-            // list of digipeater addresses that we filter out when checking if a packet has been
-            // digipeated or not.
-            let excluded_addrs = vec!["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
+            // construct the viapath
+            let viapath = route_strings.iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<&str>>()
+                .join(",");
+
+            // build the APRS text efficiently using push_str
+            let mut aprstext = String::with_capacity(source.len() + destination.len() + viapath.len() + 64);
+            aprstext.push_str(&source);
+            aprstext.push('>');
+            aprstext.push_str(&destination);
+            aprstext.push(',');
+            aprstext.push_str(&viapath);
 
             // did this station hear this packet directly or was it digipeated?
-            let heard_direct: bool = ax25_frame.route.iter().filter(|p| p.has_repeated && excluded_addrs.iter().all(|x| !p.repeater.to_string().contains(x))).count() == 0;
-            let heardfrom: String = match heard_direct {
-                true => source.clone(),
-                false => {
-                    let elems: Vec<String> = ax25_frame.route.iter().filter(|p| p.has_repeated && excluded_addrs.iter().all(|x| !p.repeater.to_string().contains(x))).map(|p| p.repeater.to_string()).collect();
-                    match elems.last() {
-                        Some(repeater) => repeater.to_string(),
-                        None => source.clone(),
-                    }
-                }
+            let heard_direct: bool = !route_strings.iter()
+                .any(|(s, repeated)| *repeated && EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)));
+
+            let heardfrom: String = if heard_direct {
+                source.clone()
+            } else {
+                route_strings.iter()
+                    .filter(|(s, repeated)| *repeated && EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
+                    .last()
+                    .map(|(s, _)| s.clone())
+                    .unwrap_or_else(|| source.clone())
             };
 
-            // Check if this packet is RF only and should not be igated, we set this flag just in
-            // case downstream consumers of this Packet need to check.
-            let rfonly_addrs = vec!["TCPIP", "RFONLY", "NOGATE"];
-            let rfonly: bool = ax25_frame.route.iter().any(|p| rfonly_addrs.iter().any(|x| p.repeater.to_string().contains(x)));
+            // Check if this packet is RF only and should not be igated
+            let rfonly: bool = route_strings.iter()
+                .any(|(s, _)| RFONLY_ADDRS.iter().any(|x| s.contains(x)));
 
             // the info data field
             let mut infodata: Vec<u8> = ax25infofield;
-            
+
             // if there isn't an information field then we don't have a valid packet
             if infodata.len() >= 2 {
-
                 // truncate off the last two bytes as those are the FCS crc data for the AX25 frame
                 infodata.truncate(infodata.len()-2);
             } else {
                 return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz AX.25 Frame does not contain an information field, {}", frequency, aprstext))));
             }
 
-            // convert the information field for the APRS packet to UTF8 text 
-            let info = match String::from_utf8(infodata.clone()) {
+            // convert the information field for the APRS packet to UTF8 text
+            let info = match String::from_utf8(infodata) {
                 Ok(s) => s,
                 Err(e) => {
-                    let lossy_info_field = String::from_utf8_lossy(&infodata[0..]);
+                    let lossy_info_field = String::from_utf8_lossy(e.as_bytes());
                     return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz Failed to convert to UTF-8: {}:{}. {}", frequency, aprstext, lossy_info_field, e))));
                 },
             };
 
-            // finally add on the information field
-            aprstext = format!("{}:{}", aprstext, &info.trim());
+            // append the information field
+            aprstext.push(':');
+            aprstext.push_str(info.trim());
 
             // the APRS packet type
             let ptype: char = match info.chars().next() {
                 Some(c) => c,
-                None => return Err(Box::new(io::Error::new(ErrorKind::Other, format!("No APRS data type found.")))),
+                None => return Err(Box::new(io::Error::new(ErrorKind::Other, "No APRS data type found.".to_string()))),
             };
 
             // return a new Packet structure
             Ok(RTPPacket {
-                receivetime: receivetime,
-                is_satellite: is_satellite(&frequency),
-                frequency: frequency,
+                receivetime,
+                is_satellite: SAT_FREQS.contains(&frequency),
+                frequency,
                 path: viapath,
-                heardfrom: heardfrom,
-                heard_direct: heard_direct,
-                rfonly: rfonly,
-                ptype: ptype,
-                source: source,
-                destination: ax25_frame.destination.to_string(),
+                heardfrom,
+                heard_direct,
+                rfonly,
+                ptype,
+                source,
+                destination,
                 raw: aprstext,
-                info: info.to_string(),
+                info,
             })
         },
         Err(e) => Err(Box::new(io::Error::new(ErrorKind::Other, format!("No RTP packet payload to parse: {:?}", e)))),
     }
-}
-
-
-fn is_satellite(f: &f64) -> bool {
-    let sat_freqs = vec![145.825];
-    sat_freqs.contains(f)
 }
 
