@@ -2,8 +2,9 @@
 
 ## Reliability
 - [ ] Graceful shutdown message to APRS-IS — send logout before closing TCP connection
-- [ ] Duplicate packet suppression — track recently-igated packets by hash with TTL
-- [ ] Configurable listen address — HTTP server hardcoded to 127.0.0.1:3000
+- [x] Duplicate packet suppression — 30s TTL dedup cache on source:info key
+- [x] Configurable listen address — via [http] listen in config.toml
+- [x] Fix igating filters: add TCPXX to rfonly, add query (?) drop, fix third-party (}) check
 
 ## Observability
 - [ ] Uptime display — show how long the application has been running in the config panel

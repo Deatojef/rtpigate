@@ -31,9 +31,22 @@ pub fn droppacket(p: &RTPPacket) -> bool {
         return true;
     }
 
-    // if this is an "RF Only" packet or it's third party traffic, the we don't igate it.
-    if p.rfonly || p.ptype == '{' {
+    // if this is an "RF Only" packet, don't igate it.
+    if p.rfonly {
         return true;
+    }
+
+    // drop generic query packets
+    if p.ptype == '?' {
+        return true;
+    }
+
+    // drop third-party packets that contain internet markers in their inner header
+    if p.ptype == '}' {
+        let inner = &p.info[1..]; // skip the '}' data type char
+        if inner.contains("TCPIP") || inner.contains("TCPXX") {
+            return true;
+        }
     }
 
     // This check is more involved that the simple is_satellite field within the RTPPacket struct,

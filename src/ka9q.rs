@@ -356,7 +356,7 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
 // Constant slices for packet classification — no heap allocation per packet
 const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
-const RFONLY_ADDRS: &[&str] = &["TCPIP", "RFONLY", "NOGATE"];
+const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
 const SAT_FREQS: &[f64] = &[145.825];
 
 // used to parse an incoming RTP packet (w/ AX25 payload) into various source, destination,

@@ -68,7 +68,7 @@ fn is_satellite(f: &f64) -> bool {
 
 **RF-only detection:**
 ```rust
-let rfonly_addrs = vec!["TCPIP", "RFONLY", "NOGATE"];
+let rfonly_addrs = vec!["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
 let rfonly: bool = ax25_frame.route.iter()
     .any(|p| rfonly_addrs.iter().any(|x| p.repeater.to_string().contains(x)));
 ```

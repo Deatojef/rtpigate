@@ -60,6 +60,12 @@ pub struct Config {
     pub location: Location,
     pub aprsis: AprsisConfig,
     pub rtp: RtpConfig,
+    pub http: Option<HttpConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct HttpConfig {
+    pub listen: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

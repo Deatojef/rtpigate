@@ -201,9 +201,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .fallback_service(ServeDir::new("frontend").append_index_html_on_directories(true))
             .with_state(app_state);
 
-        // Relying upon webserver to redirect from public facing IP:port to
-        // this localhost address for security concerns.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+        // HTTP listen address (configurable, defaults to localhost for security)
+        let listen_addr = shared_config.http.as_ref()
+            .and_then(|h| h.listen.as_deref())
+            .unwrap_or("127.0.0.1:3000");
+        let listener = tokio::net::TcpListener::bind(listen_addr).await?;
         let addr = &listener.local_addr()?;
 
         // The axum http server.

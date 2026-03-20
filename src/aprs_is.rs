@@ -1,6 +1,6 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::VecDeque, str, io::{self, ErrorKind}, sync::Arc, error::Error};
+use std::{collections::{HashMap, VecDeque}, str, io::{self, ErrorKind}, sync::Arc, error::Error};
 use chrono::{Local, Utc};
 
 use log::{info, warn, debug};
@@ -124,6 +124,10 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     // sequence number
     let mut sequence: u32 = igate::read_telemetry_file(telemetry_file).await?;
 
+
+    // duplicate packet suppression: maps "source:info" to the time it was last igated
+    let mut dedup_cache: HashMap<String, i64> = HashMap::new();
+    const DEDUP_TTL_SECS: i64 = 30;
 
     // backoff state for reconnection
     let mut backoff_secs: u64 = 5;
@@ -372,6 +376,24 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                             packets_dropped += 1;
                                         }
                                         else {
+                                            // duplicate suppression: check if we've recently igated this exact packet
+                                            let dedup_key = format!("{}:{}", p.source, p.info);
+                                            let now_ts = Local::now().timestamp();
+
+                                            // purge expired entries periodically (when cache grows)
+                                            if dedup_cache.len() > 500 {
+                                                dedup_cache.retain(|_, ts| now_ts - *ts < DEDUP_TTL_SECS);
+                                            }
+
+                                            if let Some(last_ts) = dedup_cache.get(&dedup_key) {
+                                                if now_ts - last_ts < DEDUP_TTL_SECS {
+                                                    debug!("Suppressing duplicate: {}", p.raw);
+                                                    dropped += 1;
+                                                    packets_dropped += 1;
+                                                    continue;
+                                                }
+                                            }
+
                                             // reform packet into a string suitable for xmitting to an APRS-IS server
                                             let packet_text = p.for_rxigate(&callsign);
 
@@ -382,6 +404,9 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                 warn!("Write to APRS-IS failed: {}", e);
                                                 break;
                                             }
+
+                                            // record this packet in the dedup cache
+                                            dedup_cache.insert(dedup_key, now_ts);
 
                                             packets_igated += 1;
                                         }
