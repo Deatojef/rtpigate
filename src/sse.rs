@@ -1,16 +1,13 @@
-// dbwriter.rs
-//#![allow(unused)]
-use tokio::{sync::broadcast};
-use std::{self, sync::Arc};
-use tokio_util::sync::{CancellationToken};
+use tokio::sync::broadcast::{self};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use serde::{Serialize, Deserialize};
-use serde_json::{json};
+use serde_json::json;
 
-// for logging
-use log::{info, error};
+use log::{info, warn, debug};
 
 use crate::config::{Config, AppTelemetry, DataItem};
-use crate::packet::{Packet};
+use crate::ka9q::Packet;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,35 +39,17 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                     Ok(DataItem::Pkt(p)) => {
                         match p {
                             Packet::Inet(p) => {
-
-                                // the key to be used for saving this statistics JSON too
                                 let key = String::from("inetpacket");
-
-                                // serialize the incoming struct as json
                                 let thejson = json!(p);
-
-                                // Send this sse event to the channel
-                                if let Err(e) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    error!("Failed to send SSE data to channel (receiver likely dropped): {}", e);
-
-                                    // If sending fails, it means the receiver is gone, so propagate the error
-                                    return Err(e.into());
+                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                    debug!("No SSE subscribers connected");
                                 }
                             },
                             Packet::RTP(p) => {
-
-                                // the key to be used for saving this statistics JSON too
                                 let key = String::from("rfpacket");
-
-                                // serialize the incoming struct as json
                                 let thejson = json!(p);
-
-                                // Send this sse event to the channel
-                                if let Err(e) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    error!("Failed to send SSE data to channel (receiver likely dropped): {}", e);
-
-                                    // If sending fails, it means the receiver is gone, so propagate the error
-                                    return Err(e.into());
+                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                    debug!("No SSE subscribers connected");
                                 }
                             },
                         }
@@ -79,38 +58,24 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                     Ok(DataItem::Tlm(telemetry)) => {
                         match telemetry {
                             AppTelemetry::PacketStatus(telem) => {
-
-                                // the key to be used for saving this statistics JSON too
                                 let key = telem.name.clone();
-
-                                // serialize the incoming struct as json
                                 let thejson = json!(telem);
-
-                                // Send this sse event to the channel
-                                if let Err(e) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    error!("Failed to send SSE data to channel (receiver likely dropped): {}", e);
-
-                                    // If sending fails, it means the receiver is gone, so propagate the error
-                                    return Err(e.into());
+                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                    debug!("No SSE subscribers connected");
                                 }
                             },
                             AppTelemetry::AprsisStatus(telem) => {
-
-                                // the key to be used for saving this statistics JSON too
                                 let key = telem.name.clone();
-
-                                // serialize the incoming struct as json
                                 let thejson = json!(telem);
-
-                                // Send this sse event to the channel
-                                if let Err(e) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    error!("Failed to send SSE data to channel (receiver likely dropped): {}", e);
-
-                                    // If sending fails, it means the receiver is gone, so propagate the error
-                                    return Err(e.into());
+                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                    debug!("No SSE subscribers connected");
                                 }
                             },
                         }
+                    },
+
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("SSE data channel lagged, skipped {} messages", n);
                     },
 
                     _ => (),

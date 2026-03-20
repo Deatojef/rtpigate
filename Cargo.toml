@@ -17,3 +17,4 @@ socket2 = "0.6.0"
 tokio-util = "0.7.16"
 axum = { version = "0.8.4", features = ["json"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
+aprs-parser = { path = "vendor/aprs-parser-rs" }

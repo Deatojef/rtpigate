@@ -2,10 +2,13 @@
 # The [station] section identifies the callsign and name of the station
 ###########################################
 [station]
-callsign = "N0CAL"
+callsign = "N0JD"
 
-# used when igating is enabled 
-name = "my igate"
+# used when igating is enabled
+name = "Multi-frequency Rx Igate"
+
+# set to true to enable debug level logging for troubleshooting
+verbose = true
 
 
 ###########################################
@@ -14,11 +17,11 @@ name = "my igate"
 [location]
 
 # station's location in decimal degrees
-lat = 44.9671
-lat = -103.7714
+lat = 39.348725 
+lon = -104.797296
 
 # station's altitude is in feet 
-alt = 3160
+alt = 6700
 
 
 ###########################################
@@ -26,7 +29,7 @@ alt = 3160
 ###########################################
 [aprsis]
 # The passcode should be based off of this station's callsign (above).
-passcode = "12345"
+passcode = "30614"
 host = "noam.aprs2.net"
 port = 14580
 
@@ -47,10 +50,10 @@ symbol = "\\&"
 enabled = true
 
 # if beaconing to the APRS-IS server is desired, set this to 'true'
-beaconing = true
+beaconing = false
 
 # set to 'true' to enable igating
-igating = true
+igating = false
 
 # how often to send telemetry and position beacons in seconds if igating or beaconing respectively
 threshold = 600

@@ -1,8 +1,8 @@
-use serde::{self, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::{fs, ops::Add, error::Error};
 use chrono::{DateTime, Local};
 
-use crate::packet::{Packet};
+use crate::ka9q::Packet;
 
 #[derive(Debug, Clone)]
 pub enum DataItem {
@@ -67,6 +67,7 @@ pub struct StationConfig {
     pub callsign: Option<String>,
     pub name: Option<String>,
     pub timezone: Option<String>,
+    pub verbose: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -176,56 +177,3 @@ fn passcode(callsign: &str) -> i32 {
 
     hash & 0x7fff
 }
-
-
-/*
-fn deserialize_string_or_number<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-where
-    T: FromStr + Deserialize<'de>,
-    D: Deserializer<'de>,
-    <T as FromStr>::Err: std::fmt::Display, // Ensure the error type implements Display
-{
-    let value: Value = Value::deserialize(deserializer)?;
-    match value {
-        Value::Number(num) => num.as_f64()
-            .and_then(|n| T::from_str(&n.to_string()).ok())
-            .ok_or_else(|| serde::de::Error::custom("Invalid number")),
-        Value::String(s) => T::from_str(&s)
-            .map_err(|e| serde::de::Error::custom(format!("Failed to parse string: {}", e))),
-        _ => Err(serde::de::Error::custom("Expected a string or number")),
-    }
-}
-
-
-fn deserialize_string_or_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value: Value = Value::deserialize(deserializer)?;
-    match value {
-        Value::Bool(b) => Ok(b),
-        Value::String(s) => {
-            match s.to_lowercase().as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => Err(serde::de::Error::custom("Expected 'true' or 'false'")),
-            }
-        },
-        _ => Err(serde::de::Error::custom("Expected a boolean or string")),
-    }
-}
-
-
-fn deserialize_null_from_empty_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value: Value = Value::deserialize(deserializer)?;
-    match value {
-        Value::String(s) if s.is_empty() => Ok(None), // Map empty string to None
-        Value::String(s) => Ok(Some(s)), // Map non-empty string to Some(value)
-        Value::Null => Ok(None), // Map null to None
-        _ => Err(serde::de::Error::custom("Expected a string or null")),
-    }
-}
-*/
