@@ -1,6 +1,6 @@
 use tokio::{net::UdpSocket, sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::VecDeque, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt};
+use std::{collections::{HashMap, VecDeque}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt};
 use rtp_rs::RtpReader;
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -10,7 +10,7 @@ use ax25::frame::{Ax25Frame, FrameContent};
 use log::{info, warn, error, debug};
 use aprs_parser::{AprsPacket, AprsData};
 
-use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem};
+use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
 use crate::error::RtpigateError;
 
 // the packet structure (created by the RTP thread for incoming RTP packets)
@@ -142,11 +142,21 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
     // get the address and port of the multicast end point we need to connect too
     let address = format!("{}:{}", config.rtp.host, config.rtp.port);
 
-    // statistics
+    // per-interval statistics
     let mut heard_direct = 0;
     let mut digipeated = 0;
     let mut decode_errors = 0;
     let mut total_packets = 0;
+
+    // lifetime counters (never reset)
+    let mut lifetime_total_packets: u64 = 0;
+    let mut lifetime_heard_direct: u64 = 0;
+    let mut lifetime_digipeated: u64 = 0;
+    let mut lifetime_decode_errors: u64 = 0;
+
+    // station tracking (never cleared)
+    let mut station_map: HashMap<String, StationEntry> = HashMap::new();
+    let mut freq_counts: HashMap<String, u64> = HashMap::new();
 
     // data series
     let mut packets_series = DataSeries {
@@ -240,11 +250,15 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                     let data = PacketTelemetry {
                         name: String::from("packet_statistics"),
                         timestamp: the_time,
-                        microsecs: microsecs,
+                        microsecs,
                         total_packets: packets_series.clone(),
                         heard_direct: heard_direct_series.clone(),
                         digipeated: digipeated_series.clone(),
                         decode_errors: decode_errors_series.clone(),
+                        lifetime_total_packets,
+                        lifetime_heard_direct,
+                        lifetime_digipeated,
+                        lifetime_decode_errors,
                     };
 
                     // Send statistics to the channel
@@ -252,7 +266,26 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                         warn!("Failed to send statistics data to channel: {}", e);
                     }
 
-                    // reset counters
+                    // Emit station statistics
+                    let mut stations: Vec<StationEntry> = station_map.values().cloned().collect();
+                    stations.sort_by(|a, b| b.count.cmp(&a.count));
+
+                    let mut frequencies: Vec<FrequencyCount> = freq_counts.iter()
+                        .map(|(f, c)| FrequencyCount { frequency: f.clone(), count: *c })
+                        .collect();
+                    frequencies.sort_by(|a, b| b.count.cmp(&a.count));
+
+                    let station_data = StationTelemetry {
+                        name: String::from("station_statistics"),
+                        stations,
+                        frequencies,
+                    };
+
+                    if let Err(e) = data_channel.send(DataItem::Tlm(AppTelemetry::StationStatus(station_data))) {
+                        warn!("Failed to send station statistics to channel: {}", e);
+                    }
+
+                    // reset per-interval counters
                     heard_direct = 0;
                     digipeated = 0;
                     decode_errors = 0;
@@ -277,10 +310,52 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
                                             if p.heard_direct {
                                                 heard_direct += 1;
+                                                lifetime_heard_direct += 1;
                                             } else {
                                                 digipeated += 1;
+                                                lifetime_digipeated += 1;
                                             }
                                             total_packets += 1;
+                                            lifetime_total_packets += 1;
+
+                                            // update station tracking
+                                            let freq_key = format!("{:.3}", p.frequency);
+                                            *freq_counts.entry(freq_key).or_insert(0) += 1;
+
+                                            // extract symbol table/code from info field
+                                            let (sym_table, sym_code) = extract_symbol_chars(&p.info, &p.destination);
+
+                                            let entry = station_map.entry(p.source.clone()).or_insert_with(|| StationEntry {
+                                                callsign: p.source.clone(),
+                                                last_heard: p.receivetime,
+                                                frequency: p.frequency,
+                                                latitude: None,
+                                                longitude: None,
+                                                altitude_ft: None,
+                                                heard_direct: p.heard_direct,
+                                                symbol_table: None,
+                                                symbol_code: None,
+                                                count: 0,
+                                            });
+                                            entry.last_heard = p.receivetime;
+                                            entry.frequency = p.frequency;
+                                            entry.heard_direct = p.heard_direct;
+                                            entry.count += 1;
+                                            if let Some(lat) = p.latitude {
+                                                entry.latitude = Some(lat);
+                                            }
+                                            if let Some(lon) = p.longitude {
+                                                entry.longitude = Some(lon);
+                                            }
+                                            if let Some(alt) = p.altitude_ft {
+                                                entry.altitude_ft = Some(alt);
+                                            }
+                                            if let Some(st) = sym_table {
+                                                entry.symbol_table = Some(st);
+                                            }
+                                            if let Some(sc) = sym_code {
+                                                entry.symbol_code = Some(sc);
+                                            }
 
                                             // log this
                                             debug!("{:3.3}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
@@ -294,6 +369,7 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 
                                         Err(e) => {
                                             decode_errors += 1;
+                                            lifetime_decode_errors += 1;
                                             warn!("RTP parse error: {}", e);
                                         },
                                     };
@@ -467,5 +543,57 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
         },
         Err(e) => Err(RtpigateError::Parse(format!("AX.25 frame parse failed: {:?}", e))),
     }
+}
+
+/// Extract APRS symbol table and code characters from the info field.
+/// Returns (Option<symbol_table>, Option<symbol_code>).
+fn extract_symbol_chars(info: &str, _destination: &str) -> (Option<char>, Option<char>) {
+    if info.len() < 2 {
+        return (None, None);
+    }
+    let data_type = info.as_bytes()[0] as char;
+    let chars: Vec<char> = info.chars().collect();
+
+    match data_type {
+        '!' | '=' => {
+            if chars.len() >= 2 {
+                let c1 = chars[1];
+                if c1.is_ascii_digit() {
+                    // uncompressed: !DDMM.MMN<table>DDDMM.MMW<code>
+                    if chars.len() >= 20 {
+                        return (Some(chars[9]), Some(chars[19]));
+                    }
+                } else {
+                    // compressed: !<table>YYYYXXXX<code>csT
+                    if chars.len() >= 11 {
+                        return (Some(c1), Some(chars[10]));
+                    }
+                }
+            }
+        },
+        '/' | '@' => {
+            // timestamped: skip 7-char timestamp + data_type = offset 8
+            if chars.len() >= 9 {
+                let c8 = chars[8];
+                if c8.is_ascii_digit() {
+                    if chars.len() >= 27 {
+                        return (Some(chars[16]), Some(chars[26]));
+                    }
+                } else {
+                    if chars.len() >= 18 {
+                        return (Some(c8), Some(chars[17]));
+                    }
+                }
+            }
+        },
+        '`' | '\'' => {
+            // Mic-E: symbol at chars[7], table at chars[8]
+            if chars.len() >= 9 {
+                return (Some(chars[8]), Some(chars[7]));
+            }
+        },
+        _ => {},
+    }
+    (None, None)
 }
 

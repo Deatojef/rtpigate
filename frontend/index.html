@@ -48,6 +48,13 @@
                         <canvas id="spark-rf-errors" class="sparkline" width="150" height="40"></canvas>
                     </div>
                 </div>
+                <div class="stat-lifetime">
+                    <span class="lifetime-label">Lifetime:</span>
+                    <span class="lifetime-item">Direct <span id="lt-rf-direct" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Digipeated <span id="lt-rf-digipeated" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Errors <span id="lt-rf-errors" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Total <span id="lt-rf-total" class="lifetime-value">--</span></span>
+                </div>
             </div>
             <div class="stat-group">
                 <h2>APRS-IS <span class="stat-interval">(per 15s)</span></h2>
@@ -67,6 +74,12 @@
                         <span id="stat-aprsis-reconnects" class="stat-value">--</span>
                         <canvas id="spark-aprsis-reconnects" class="sparkline" width="150" height="40"></canvas>
                     </div>
+                </div>
+                <div class="stat-lifetime">
+                    <span class="lifetime-label">Lifetime:</span>
+                    <span class="lifetime-item">Igated <span id="lt-aprsis-igated" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Dropped <span id="lt-aprsis-dropped" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Reconnects <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
                 </div>
             </div>
         </section>
@@ -92,21 +105,31 @@
         </section>
 
         <section id="last-heard">
-            <h2>Last Heard Stations</h2>
-            <table id="heard-table">
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th>Callsign</th>
-                        <th>Last Heard</th>
-                        <th>Freq</th>
-                        <th>Last Position</th>
-                        <th>Count</th>
-                    </tr>
-                </thead>
-                <tbody id="heard-body">
-                </tbody>
-            </table>
+            <h2>Stations</h2>
+            <div id="station-tabs">
+                <button class="tab-btn active" data-tab="top-talkers">Top Talkers</button>
+                <button class="tab-btn" data-tab="most-distant">Most Distant</button>
+                <button class="tab-btn" data-tab="nearest">Nearest</button>
+                <button class="tab-btn" data-tab="highest-alt">Highest Altitude</button>
+                <button class="tab-btn" data-tab="frequencies">Frequencies</button>
+            </div>
+            <div id="heard-content">
+                <table id="heard-table">
+                    <thead id="heard-thead">
+                        <tr>
+                            <th></th>
+                            <th>Callsign</th>
+                            <th>Last Heard</th>
+                            <th>Freq</th>
+                            <th>Position</th>
+                            <th>Count</th>
+                        </tr>
+                    </thead>
+                    <tbody id="heard-body">
+                    </tbody>
+                </table>
+                <div id="freq-chart" style="display:none;"></div>
+            </div>
         </section>
     </main>
 

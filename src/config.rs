@@ -16,6 +16,7 @@ pub enum DataItem {
 pub enum AppTelemetry {
     PacketStatus(PacketTelemetry),
     AprsisStatus(AprsisTelemetry),
+    StationStatus(StationTelemetry),
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -27,6 +28,10 @@ pub struct PacketTelemetry {
     pub heard_direct: DataSeries<u32>,
     pub digipeated: DataSeries<u32>,
     pub decode_errors: DataSeries<u32>,
+    pub lifetime_total_packets: u64,
+    pub lifetime_heard_direct: u64,
+    pub lifetime_digipeated: u64,
+    pub lifetime_decode_errors: u64,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -38,6 +43,10 @@ pub struct AprsisTelemetry {
     pub packets_igated: DataSeries<u32>,
     pub packets_dropped: DataSeries<u32>,
     pub rf_received: DataSeries<u32>,
+    pub lifetime_rf_received: u64,
+    pub lifetime_packets_igated: u64,
+    pub lifetime_packets_dropped: u64,
+    pub lifetime_reconnects: u64,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -52,8 +61,32 @@ pub struct DataPoint<T: Add> {
     pub value: T,
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct StationEntry {
+    pub callsign: String,
+    pub last_heard: DateTime<Local>,
+    pub frequency: f64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub altitude_ft: Option<f64>,
+    pub heard_direct: bool,
+    pub symbol_table: Option<char>,
+    pub symbol_code: Option<char>,
+    pub count: u64,
+}
 
+#[derive(Serialize, Debug, Clone)]
+pub struct StationTelemetry {
+    pub name: String,
+    pub stations: Vec<StationEntry>,
+    pub frequencies: Vec<FrequencyCount>,
+}
 
+#[derive(Serialize, Debug, Clone)]
+pub struct FrequencyCount {
+    pub frequency: String,
+    pub count: u64,
+}
 
 //--------- configuration file definitions/handling --------
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

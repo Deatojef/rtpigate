@@ -269,6 +269,34 @@ main {
     }
 }
 
+/* Lifetime statistics row */
+.stat-lifetime {
+    border-top: 1px dashed var(--panel-border);
+    margin-top: 8px;
+    padding-top: 6px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.lifetime-label {
+    font-variant: small-caps;
+    color: var(--text-dim);
+}
+
+.lifetime-item {
+    font-variant: small-caps;
+    color: var(--text-dim);
+}
+
+.lifetime-value {
+    font-variant: normal;
+    color: var(--text-muted);
+    font-weight: bold;
+}
+
 .sparkline {
     display: block;
     margin-top: 4px;
@@ -427,7 +455,7 @@ tr.rf-packet td.pkt-source a:hover {
     text-decoration: underline;
 }
 
-/* Last heard table */
+/* Last heard / Stations panel */
 #last-heard {
     background-color: var(--panel-bg);
     padding: 8px 12px;
@@ -443,10 +471,83 @@ tr.rf-packet td.pkt-source a:hover {
     padding-bottom: 4px;
 }
 
+/* Tab buttons */
+#station-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.tab-btn {
+    font-family: inherit;
+    font-size: 0.8em;
+    padding: 4px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.tab-btn:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+}
+
+.tab-btn.active {
+    background-color: var(--highlight);
+    color: #fff;
+    border-color: var(--highlight);
+}
+
+.empty-state {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 16px;
+    font-style: italic;
+}
+
+/* Frequency bar chart */
+.freq-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.freq-label {
+    width: 12ch;
+    text-align: right;
+    font-size: 0.9em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.freq-bar-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.freq-bar {
+    height: 18px;
+    background-color: var(--highlight);
+    border-radius: 2px;
+    min-width: 2px;
+}
+
+.freq-count {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 #heard-table {
     width: 100%;
     border-collapse: collapse;
-    table-layout: fixed;
 }
 
 #heard-table thead th {
@@ -457,13 +558,6 @@ tr.rf-packet td.pkt-source a:hover {
     padding: 2px 6px;
     font-weight: normal;
 }
-
-#heard-table th:nth-child(1) { width: 3ch; }     /* Symbol */
-#heard-table th:nth-child(2) { width: 12ch; }    /* Callsign */
-#heard-table th:nth-child(3) { width: 10ch; }    /* Last Heard */
-#heard-table th:nth-child(4) { width: 10ch; }    /* Freq */
-#heard-table th:nth-child(5) { width: 30ch; }    /* Last Position */
-#heard-table th:nth-child(6) { width: 8ch; }     /* Count */
 
 #heard-table tbody td {
     padding: 2px 6px;
@@ -557,8 +651,15 @@ tr.rf-packet td.pkt-source a:hover {
         display: none;
     }
 
-    #heard-table {
-        table-layout: auto;
+    /* Tabs scroll on mobile */
+    #station-tabs {
+        overflow-x: auto;
+        flex-wrap: nowrap;
+    }
+
+    .tab-btn {
+        white-space: nowrap;
+        flex-shrink: 0;
     }
 
     #heard-table th:nth-child(5),

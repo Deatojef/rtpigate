@@ -22,14 +22,27 @@
     var statAprsisDropped = document.getElementById("stat-aprsis-dropped");
     var statAprsisReconnects = document.getElementById("stat-aprsis-reconnects");
 
+    // Lifetime stat elements
+    var ltRfDirect = document.getElementById("lt-rf-direct");
+    var ltRfDigipeated = document.getElementById("lt-rf-digipeated");
+    var ltRfErrors = document.getElementById("lt-rf-errors");
+    var ltRfTotal = document.getElementById("lt-rf-total");
+    var ltAprsisIgated = document.getElementById("lt-aprsis-igated");
+    var ltAprsisDropped = document.getElementById("lt-aprsis-dropped");
+    var ltAprsisReconnects = document.getElementById("lt-aprsis-reconnects");
+
     // Uptime
     var uptimeEl = document.getElementById("uptime");
     var startedAt = null;
     var uptimeTimer = null;
 
-    // Last heard stations: { callsign: { time, freq, direct, via, count } }
-    var lastHeard = {};
+    // Station data from backend
+    var stationData = null; // { stations: [...], frequencies: [...] }
+    var activeTab = "top-talkers";
     var heardBody = document.getElementById("heard-body");
+    var heardThead = document.getElementById("heard-thead");
+    var freqChart = document.getElementById("freq-chart");
+    var heardTable = document.getElementById("heard-table");
 
 
     // ---- Uptime display ----
@@ -49,102 +62,260 @@
         uptimeEl.textContent = "up " + parts.join(" ");
     }
 
-    // ---- Last heard stations ----
+    // ---- Station tabs ----
 
-    function updateLastHeard(data) {
-        var call = data.source;
-        if (!lastHeard[call]) {
-            lastHeard[call] = { time: null, freq: 0, lat: null, lon: null, symbolImg: null, count: 0 };
+    function setupTabs() {
+        var tabs = document.querySelectorAll(".tab-btn");
+        for (var i = 0; i < tabs.length; i++) {
+            (function (tab) {
+                tab.addEventListener("click", function () {
+                    for (var j = 0; j < tabs.length; j++) {
+                        tabs[j].classList.remove("active");
+                    }
+                    tab.classList.add("active");
+                    activeTab = tab.getAttribute("data-tab");
+                    renderStations();
+                });
+            })(tabs[i]);
         }
-        var entry = lastHeard[call];
-        entry.time = data.receivetime;
-        entry.freq = data.frequency;
-        entry.count += 1;
-
-        // update symbol if available
-        var img = getSymbolImage(data.info, data.destination);
-        if (img) {
-            entry.symbolImg = img;
-        }
-
-        // update position if available
-        if (data.latitude != null && data.longitude != null) {
-            entry.lat = data.latitude;
-            entry.lon = data.longitude;
-        }
-
-        renderLastHeard();
     }
 
-    function renderLastHeard() {
-        // Sort by most recent first
-        var calls = Object.keys(lastHeard);
-        calls.sort(function (a, b) {
-            return lastHeard[b].count - lastHeard[a].count;
-        });
+    function getSymbolImageFromEntry(entry) {
+        if (!entry.symbol_table || !entry.symbol_code) return null;
+        var tableChar = entry.symbol_table;
+        var symbolChar = entry.symbol_code;
+        var overlay = null;
 
+        if (tableChar !== "/" && tableChar !== "\\") {
+            overlay = tableChar;
+            tableChar = "\\";
+        }
+
+        var key = tableChar + symbolChar;
+        if (typeof symbols !== "undefined" && symbols[key]) {
+            var identity = symbols[key].identity;
+            var filename = overlay ? (overlay + "-" + identity + ".png") : (identity + ".png");
+            return "/assets/aprssymbols/" + filename;
+        }
+        return null;
+    }
+
+    function renderStations() {
+        if (!stationData) return;
+
+        if (activeTab === "frequencies") {
+            heardTable.style.display = "none";
+            freqChart.style.display = "block";
+            renderFrequencies();
+            return;
+        }
+
+        heardTable.style.display = "";
+        freqChart.style.display = "none";
+
+        var stations = stationData.stations.slice();
+        var showDistance = false;
+        var showAltitude = false;
+        var headers;
+
+        if (activeTab === "top-talkers") {
+            stations.sort(function (a, b) { return b.count - a.count; });
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Count"];
+        } else if (activeTab === "most-distant") {
+            stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
+            if (stationLat !== null && stationLon !== null) {
+                stations.forEach(function (s) { s._dist = haversineDistance(stationLat, stationLon, s.latitude, s.longitude); });
+                stations.sort(function (a, b) { return b._dist - a._dist; });
+            }
+            showDistance = true;
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Distance"];
+        } else if (activeTab === "nearest") {
+            stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
+            if (stationLat !== null && stationLon !== null) {
+                stations.forEach(function (s) { s._dist = haversineDistance(stationLat, stationLon, s.latitude, s.longitude); });
+                stations.sort(function (a, b) { return a._dist - b._dist; });
+            }
+            showDistance = true;
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Distance"];
+        } else if (activeTab === "highest-alt") {
+            stations = stations.filter(function (s) { return s.altitude_ft != null; });
+            stations.sort(function (a, b) { return b.altitude_ft - a.altitude_ft; });
+            showAltitude = true;
+            headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Position"];
+        }
+
+        // Update table headers
+        heardThead.innerHTML = "";
+        var headerRow = document.createElement("tr");
+        for (var h = 0; h < headers.length; h++) {
+            var th = document.createElement("th");
+            th.textContent = headers[h];
+            headerRow.appendChild(th);
+        }
+        heardThead.appendChild(headerRow);
+
+        // Render rows (limit to 30)
         heardBody.innerHTML = "";
-        var displayCount = Math.min(calls.length, MAX_HEARD);
+        var displayCount = Math.min(stations.length, MAX_HEARD);
+
+        if (displayCount === 0) {
+            var tr = document.createElement("tr");
+            var td = document.createElement("td");
+            td.colSpan = headers.length;
+            td.className = "empty-state";
+            td.textContent = "No stations with qualifying data";
+            tr.appendChild(td);
+            heardBody.appendChild(tr);
+            return;
+        }
+
         for (var i = 0; i < displayCount; i++) {
-            var call = calls[i];
-            var e = lastHeard[call];
+            var s = stations[i];
             var tr = document.createElement("tr");
 
+            // Symbol
             var tdSymbol = document.createElement("td");
-            if (e.symbolImg) {
+            var imgSrc = getSymbolImageFromEntry(s);
+            if (imgSrc) {
                 var img = document.createElement("img");
-                img.src = e.symbolImg;
+                img.src = imgSrc;
                 img.alt = "";
                 img.onerror = function () { this.parentNode.removeChild(this); };
                 tdSymbol.appendChild(img);
             }
             tr.appendChild(tdSymbol);
 
+            // Callsign
             var tdCall = document.createElement("td");
             var callLink = document.createElement("a");
-            callLink.href = aprsfiUrl(call);
+            callLink.href = aprsfiUrl(s.callsign);
             callLink.target = "_blank";
             callLink.rel = "noopener";
-            callLink.textContent = call;
+            callLink.textContent = s.callsign;
             tdCall.appendChild(callLink);
             tr.appendChild(tdCall);
 
+            // Last Heard
             var tdTime = document.createElement("td");
-            tdTime.textContent = formatTime(e.time);
+            tdTime.textContent = formatTime(s.last_heard);
             tr.appendChild(tdTime);
 
+            // Frequency
             var tdFreq = document.createElement("td");
-            tdFreq.textContent = e.freq.toFixed(3);
+            tdFreq.textContent = s.frequency.toFixed(3);
             tr.appendChild(tdFreq);
 
-            var tdCoords = document.createElement("td");
-            tdCoords.className = "heard-coords";
-            if (e.lat != null && e.lon != null) {
-                var coordText = e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
-                var hLink = document.createElement("a");
-                hLink.href = mapUrl(e.lat, e.lon, call);
-                hLink.target = "_blank";
-                hLink.rel = "noopener";
-                hLink.className = "coord-link";
-                hLink.textContent = coordText;
-                tdCoords.appendChild(hLink);
-                if (stationLat !== null && stationLon !== null) {
-                    var dist = haversineDistance(stationLat, stationLon, e.lat, e.lon);
-                    var distSpan = document.createElement("span");
-                    distSpan.className = "pkt-distance";
-                    distSpan.textContent = " (" + Math.round(dist) + "mi)";
-                    tdCoords.appendChild(distSpan);
-                }
-            } else {
-                tdCoords.textContent = "--";
-            }
-            tr.appendChild(tdCoords);
+            if (showAltitude) {
+                // Altitude
+                var tdAlt = document.createElement("td");
+                tdAlt.textContent = s.altitude_ft != null ? Math.round(s.altitude_ft).toLocaleString() + " ft" : "--";
+                tr.appendChild(tdAlt);
 
-            var tdCount = document.createElement("td");
-            tdCount.textContent = e.count;
-            tr.appendChild(tdCount);
+                // Position
+                var tdPos = document.createElement("td");
+                tdPos.className = "heard-coords";
+                if (s.latitude != null && s.longitude != null) {
+                    var link = document.createElement("a");
+                    link.href = mapUrl(s.latitude, s.longitude, s.callsign);
+                    link.target = "_blank";
+                    link.rel = "noopener";
+                    link.className = "coord-link";
+                    link.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
+                    tdPos.appendChild(link);
+                } else {
+                    tdPos.textContent = "--";
+                }
+                tr.appendChild(tdPos);
+            } else if (showDistance) {
+                // Position
+                var tdCoords = document.createElement("td");
+                tdCoords.className = "heard-coords";
+                if (s.latitude != null && s.longitude != null) {
+                    var cLink = document.createElement("a");
+                    cLink.href = mapUrl(s.latitude, s.longitude, s.callsign);
+                    cLink.target = "_blank";
+                    cLink.rel = "noopener";
+                    cLink.className = "coord-link";
+                    cLink.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
+                    tdCoords.appendChild(cLink);
+                } else {
+                    tdCoords.textContent = "--";
+                }
+                tr.appendChild(tdCoords);
+
+                // Distance
+                var tdDist = document.createElement("td");
+                tdDist.textContent = s._dist != null ? Math.round(s._dist) + " mi" : "--";
+                tr.appendChild(tdDist);
+            } else {
+                // Position with distance inline
+                var tdCoords2 = document.createElement("td");
+                tdCoords2.className = "heard-coords";
+                if (s.latitude != null && s.longitude != null) {
+                    var cLink2 = document.createElement("a");
+                    cLink2.href = mapUrl(s.latitude, s.longitude, s.callsign);
+                    cLink2.target = "_blank";
+                    cLink2.rel = "noopener";
+                    cLink2.className = "coord-link";
+                    cLink2.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
+                    tdCoords2.appendChild(cLink2);
+                    if (stationLat !== null && stationLon !== null) {
+                        var dist = haversineDistance(stationLat, stationLon, s.latitude, s.longitude);
+                        var distSpan = document.createElement("span");
+                        distSpan.className = "pkt-distance";
+                        distSpan.textContent = " (" + Math.round(dist) + "mi)";
+                        tdCoords2.appendChild(distSpan);
+                    }
+                } else {
+                    tdCoords2.textContent = "--";
+                }
+                tr.appendChild(tdCoords2);
+
+                // Count
+                var tdCount = document.createElement("td");
+                tdCount.textContent = s.count.toLocaleString();
+                tr.appendChild(tdCount);
+            }
 
             heardBody.appendChild(tr);
+        }
+    }
+
+    function renderFrequencies() {
+        freqChart.innerHTML = "";
+        if (!stationData || !stationData.frequencies || stationData.frequencies.length === 0) {
+            freqChart.innerHTML = '<div class="empty-state">No frequency data</div>';
+            return;
+        }
+
+        var freqs = stationData.frequencies.slice();
+        freqs.sort(function (a, b) { return b.count - a.count; });
+        var maxCount = freqs[0].count;
+
+        for (var i = 0; i < freqs.length; i++) {
+            var row = document.createElement("div");
+            row.className = "freq-row";
+
+            var label = document.createElement("span");
+            label.className = "freq-label";
+            label.textContent = freqs[i].frequency + " MHz";
+            row.appendChild(label);
+
+            var barWrap = document.createElement("div");
+            barWrap.className = "freq-bar-wrap";
+
+            var bar = document.createElement("div");
+            bar.className = "freq-bar";
+            bar.style.width = Math.max(1, (freqs[i].count / maxCount) * 100) + "%";
+            barWrap.appendChild(bar);
+
+            var countLabel = document.createElement("span");
+            countLabel.className = "freq-count";
+            countLabel.textContent = freqs[i].count.toLocaleString();
+            barWrap.appendChild(countLabel);
+
+            row.appendChild(barWrap);
+            freqChart.appendChild(row);
         }
     }
 
@@ -860,7 +1031,6 @@
             onMessage();
             var data = JSON.parse(e.data);
             addPacketRow("rf", data);
-            updateLastHeard(data);
             setStatus(rtpStatus, "connected");
         });
 
@@ -873,6 +1043,11 @@
             drawSparkline("spark-rf-direct", data.heard_direct, "#a5d6a7");
             drawSparkline("spark-rf-digipeated", data.digipeated, "#fff176");
             drawSparkline("spark-rf-errors", data.decode_errors, "#ef9a9a");
+            // Lifetime counters
+            ltRfDirect.textContent = (data.lifetime_heard_direct || 0).toLocaleString();
+            ltRfDigipeated.textContent = (data.lifetime_digipeated || 0).toLocaleString();
+            ltRfErrors.textContent = (data.lifetime_decode_errors || 0).toLocaleString();
+            ltRfTotal.textContent = (data.lifetime_total_packets || 0).toLocaleString();
             setStatus(rtpStatus, "connected");
         });
 
@@ -885,13 +1060,24 @@
             drawSparkline("spark-aprsis-igated", data.packets_igated, "#fff176");
             drawSparkline("spark-aprsis-dropped", data.packets_dropped, "#ef9a9a");
             drawSparkline("spark-aprsis-reconnects", data.reconnects, "#ce93d8");
+            // Lifetime counters
+            ltAprsisIgated.textContent = (data.lifetime_packets_igated || 0).toLocaleString();
+            ltAprsisDropped.textContent = (data.lifetime_packets_dropped || 0).toLocaleString();
+            ltAprsisReconnects.textContent = (data.lifetime_reconnects || 0).toLocaleString();
             setStatus(aprsisStatus, "connected");
+        });
+
+        es.addEventListener("station_statistics", function (e) {
+            onMessage();
+            stationData = JSON.parse(e.data);
+            renderStations();
         });
     }
 
     // Start
     setupTooltips();
     setupThemeToggle();
+    setupTabs();
     fetchConfig();
     connectSSE();
 })();

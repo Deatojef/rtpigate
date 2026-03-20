@@ -32,6 +32,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut packets_igated: u32 = 0;
     let mut stats_rf_received: u32 = 0;
 
+    // lifetime counters (never reset)
+    let mut lifetime_rf_received: u64 = 0;
+    let mut lifetime_packets_igated: u64 = 0;
+    let mut lifetime_packets_dropped: u64 = 0;
+
     // data series
     let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: VecDeque::new() };
     let mut dropped_series = DataSeries { name: String::from("packets_dropped"), data: VecDeque::new() };
@@ -283,6 +288,10 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         rf_received: rf_received_series.clone(),
                         packets_dropped: dropped_series.clone(),
                         packets_igated: igated_series.clone(),
+                        lifetime_rf_received,
+                        lifetime_packets_igated,
+                        lifetime_packets_dropped,
+                        lifetime_reconnects: total_reconnects as u64,
                     };
 
                     if let Err(e) = data_channel.send(DataItem::Tlm(AppTelemetry::AprsisStatus(data))) {
@@ -326,6 +335,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                     // update counters
                                     rf_received += 1;
                                     stats_rf_received += 1;
+                                    lifetime_rf_received += 1;
                                     heard_direct += p.heard_direct as u32;
                                     received_sat += p.is_satellite as u32;
                                     if p.frequency != 144.390 {
@@ -340,6 +350,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                                             dropped += 1;
                                             packets_dropped += 1;
+                                            lifetime_packets_dropped += 1;
                                         }
                                         else {
                                             // duplicate suppression: check if we've recently igated this exact packet
@@ -356,6 +367,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                     debug!("Suppressing duplicate: {}", p.raw);
                                                     dropped += 1;
                                                     packets_dropped += 1;
+                                                    lifetime_packets_dropped += 1;
                                                     continue;
                                                 }
                                             }
@@ -375,6 +387,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                             dedup_cache.insert(dedup_key, now_ts);
 
                                             packets_igated += 1;
+                                            lifetime_packets_igated += 1;
                                         }
                                     }
 
