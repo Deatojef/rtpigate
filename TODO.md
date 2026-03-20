@@ -23,5 +23,5 @@
 - [x] Signal-based config reload — SIGHUP re-reads and validates config.toml, updates frontend config
 
 ## Code Quality
-- [ ] Tests — unit tests for droppacket(), positpacket(), passcode(), rfonly/heard-direct detection, telemetry encoding
+- [x] Tests — 44 unit tests covering passcode, login, config validation, droppacket, positpacket, telemetry, quadratic encoding
 - [x] Error types — RtpigateError enum with Network, Io, Parse, Config, Validation variants
