@@ -114,7 +114,13 @@
             tdCoords.className = "heard-coords";
             if (e.lat != null && e.lon != null) {
                 var coordText = e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
-                tdCoords.textContent = coordText;
+                var hLink = document.createElement("a");
+                hLink.href = mapUrl(e.lat, e.lon, call);
+                hLink.target = "_blank";
+                hLink.rel = "noopener";
+                hLink.className = "coord-link";
+                hLink.textContent = coordText;
+                tdCoords.appendChild(hLink);
                 if (stationLat !== null && stationLon !== null) {
                     var dist = haversineDistance(stationLat, stationLon, e.lat, e.lon);
                     var distSpan = document.createElement("span");
@@ -242,7 +248,8 @@
         var items = [];
         if (cfg.location) {
             if (cfg.location.lat != null && cfg.location.lon != null) {
-                items.push(["Coordinates", cfg.location.lat.toFixed(6) + ", " + cfg.location.lon.toFixed(6)]);
+                var stationCall = (cfg.station && cfg.station.callsign) ? cfg.station.callsign : "";
+                items.push(["Coordinates", { type: "coords", lat: cfg.location.lat, lon: cfg.location.lon, label: stationCall }]);
             }
             if (cfg.location.alt != null) items.push(["Altitude", cfg.location.alt + " ft"]);
         }
@@ -268,10 +275,21 @@
 
             var value = document.createElement("span");
             value.className = "config-value";
-            if (items[i][1] === "Enabled") {
-                value.classList.add("config-enabled");
+            var itemVal = items[i][1];
+            if (itemVal && itemVal.type === "coords") {
+                var link = document.createElement("a");
+                link.href = mapUrl(itemVal.lat, itemVal.lon, itemVal.label);
+                link.target = "_blank";
+                link.rel = "noopener";
+                link.className = "coord-link";
+                link.textContent = itemVal.lat.toFixed(6) + ", " + itemVal.lon.toFixed(6);
+                value.appendChild(link);
+            } else {
+                if (itemVal === "Enabled") {
+                    value.classList.add("config-enabled");
+                }
+                value.textContent = itemVal;
             }
-            value.textContent = items[i][1];
             div.appendChild(value);
 
             grid.appendChild(div);
@@ -410,23 +428,27 @@
         var dataType = info.charAt(0);
 
         if (dataType === "!" || dataType === "=") {
-            if (info.length >= 9) {
+            if (info.length >= 2) {
                 if (info.charAt(1) === "/" || info.charAt(1) === "\\") {
+                    // compressed: !sym YYYY XXXX sym_code cs T
                     tableChar = info.charAt(1);
-                    if (info.length >= 14) symbolChar = info.charAt(13);
+                    if (info.length >= 11) symbolChar = info.charAt(10);
                 } else {
+                    // uncompressed: !DDMM.MMN sym DDDMM.MMW sym_code
                     if (info.length >= 10) tableChar = info.charAt(9);
                     if (info.length >= 20) symbolChar = info.charAt(19);
                 }
             }
         } else if (dataType === "/" || dataType === "@") {
-            if (info.length >= 16) {
+            if (info.length >= 9) {
                 if (info.charAt(8) === "/" || info.charAt(8) === "\\") {
+                    // compressed: @timestamp sym YYYY XXXX sym_code cs T
                     tableChar = info.charAt(8);
-                    if (info.length >= 14) symbolChar = info.charAt(13);
+                    if (info.length >= 18) symbolChar = info.charAt(17);
                 } else {
-                    if (info.length >= 16) tableChar = info.charAt(15);
-                    if (info.length >= 26) symbolChar = info.charAt(25);
+                    // uncompressed: @timestamp DDMM.MMN sym DDDMM.MMW sym_code
+                    if (info.length >= 17) tableChar = info.charAt(16);
+                    if (info.length >= 27) symbolChar = info.charAt(26);
                 }
             }
         } else if (dataType === "`" || dataType === "'") {
@@ -464,6 +486,17 @@
         }
 
         return null;
+    }
+
+    // ---- Map URL helper ----
+
+    var isApplePlatform = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent);
+
+    function mapUrl(lat, lon, label) {
+        if (isApplePlatform) {
+            return "https://maps.apple.com/?q=" + encodeURIComponent(label) + "&ll=" + lat + "%2C" + lon;
+        }
+        return "https://www.google.com/maps/search/?api=1&query=" + lat + "%2C" + lon;
     }
 
     // ---- Time formatting ----
@@ -650,7 +683,13 @@
         }
         if (pos) {
             var coordText = pos.lat.toFixed(6) + ", " + pos.lon.toFixed(6);
-            tdCoords.textContent = coordText;
+            var link = document.createElement("a");
+            link.href = mapUrl(pos.lat, pos.lon, data.source || "");
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.className = "coord-link";
+            link.textContent = coordText;
+            tdCoords.appendChild(link);
             if (stationLat !== null && stationLon !== null) {
                 var dist = haversineDistance(stationLat, stationLon, pos.lat, pos.lon);
                 var distSpan = document.createElement("span");

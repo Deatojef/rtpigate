@@ -310,7 +310,7 @@ main {
 /* Fixed column widths using ch units (character widths in monospace) */
 #packet-table th:nth-child(1) { width: 9ch; }               /* Time: HH:MM:SS */
 #packet-table th:nth-child(2) { width: 3ch; }               /* Symbol icon */
-#packet-table th:nth-child(3) { width: 10ch; }              /* Source callsign */
+#packet-table th:nth-child(3) { width: 12ch; }              /* Source callsign */
 #packet-table th:nth-child(4) { width: 8ch; }               /* Freq: 144.390 */
 #packet-table th:nth-child(5) { width: 7ch; text-align: center; }   /* Direct */
 #packet-table th:nth-child(6) { width: 10ch; text-align: center; }  /* Satellite */
@@ -376,6 +376,15 @@ td.pkt-sat {
 td.pkt-coords {
     font-size: 0.9em;
     color: var(--text-secondary);
+}
+
+.coord-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+
+.coord-link:hover {
+    text-decoration: underline;
 }
 
 td.pkt-coords .pkt-distance {
