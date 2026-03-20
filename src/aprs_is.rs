@@ -1,6 +1,6 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, str, sync::Arc};
+use std::{collections::{HashMap, VecDeque}, sync::Arc};
 use chrono::{Local, Utc};
 
 use log::{info, warn, debug};
@@ -8,7 +8,7 @@ use tokio::time::sleep;
 
 use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem};
 use crate::error::RtpigateError;
-use crate::ka9q::{InetPacket, Packet};
+use crate::ka9q::Packet;
 use crate::igate::{self, TOCALL, AnalogItem, APRSQuadratic, Telemetry};
 
 
@@ -31,11 +31,9 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut packets_dropped: u32 = 0;
     let mut packets_igated: u32 = 0;
     let mut stats_rf_received: u32 = 0;
-    let mut stats_inet_received: u32 = 0;
 
     // data series
     let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: VecDeque::new() };
-    let mut inet_received_series = DataSeries { name: String::from("inet_received"), data: VecDeque::new() };
     let mut dropped_series = DataSeries { name: String::from("packets_dropped"), data: VecDeque::new() };
     let mut igated_series = DataSeries { name: String::from("packets_igated"), data: VecDeque::new() };
     let mut reconnect_series = DataSeries { name: String::from("aprsis_reconnects"), data: VecDeque::new() };
@@ -263,13 +261,12 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                     // add data points to series
                     rf_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_rf_received });
-                    inet_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_inet_received });
                     dropped_series.data.push_back(DataPoint { timestamp: the_time, value: packets_dropped });
                     igated_series.data.push_back(DataPoint { timestamp: the_time, value: packets_igated });
                     reconnect_series.data.push_back(DataPoint { timestamp: the_time, value: reconnects_this_interval });
 
                     // trim series to max 100 data points
-                    for series in [&mut rf_received_series, &mut inet_received_series, &mut dropped_series, &mut igated_series, &mut reconnect_series] {
+                    for series in [&mut rf_received_series, &mut dropped_series, &mut igated_series, &mut reconnect_series] {
                         if series.data.len() > 100 {
                             series.data.pop_front();
                         }
@@ -284,7 +281,6 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         microsecs,
                         reconnects: reconnect_series.clone(),
                         rf_received: rf_received_series.clone(),
-                        inet_received: inet_received_series.clone(),
                         packets_dropped: dropped_series.clone(),
                         packets_igated: igated_series.clone(),
                     };
@@ -297,70 +293,22 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                     packets_dropped = 0;
                     packets_igated = 0;
                     stats_rf_received = 0;
-                    stats_inet_received = 0;
                     reconnects_this_interval = 0;
                 },
 
-                // check if there's anything we can read from the APRS-IS server
+                // read from APRS-IS server (consume data to detect EOF/errors)
                 read_result = read_stream.read_until(b'\n', &mut raw) => {
                     match read_result {
                         Ok(0) => {
                             warn!("APRS-IS server {}:{} closed connection", host, port);
                             break;
                         },
-                        Ok(_numbytes) => {
-
+                        Ok(_) => {
                             let s = String::from_utf8_lossy(&raw);
-                            match s.chars().next() {
-                                Some(x) => match x {
-                                    '#' => debug!("{}:{}: {}", host, port, s.trim_end()),
-                                    _ => {
-
-                                            debug!("trying to process packet from aprsis: {}", &s);
-
-                                            if let Ok(p) = str::from_utf8(&raw) {
-
-                                                let packet_text = p.trim();
-
-                                                if let Some(source_delim) = packet_text.find(">") {
-
-                                                    if let Some(info_delim) = packet_text.find(":") {
-
-                                                        let source = &packet_text[0..source_delim];
-                                                        let info = &packet_text[info_delim..];
-
-                                                        if source.len() > 0 && info.len() > 0 {
-
-                                                            if let Some(ptype) = info.chars().next() {
-                                                                let packet = InetPacket {
-                                                                    receivetime: Local::now(),
-                                                                    info: info.to_owned(),
-                                                                    source: source.to_owned(),
-                                                                    ptype: ptype as char,
-                                                                    raw: packet_text.to_owned(),
-                                                                    aprsaddress: address.clone(),
-                                                                };
-
-                                                                match data_channel.send(DataItem::Pkt(Packet::Inet(packet))) {
-                                                                    Ok(_a) => {
-                                                                        debug!("---.---MHz Direct: 0  {}", packet_text);
-                                                                        stats_inet_received += 1;
-                                                                    },
-                                                                    Err(e) => {
-                                                                        warn!("Channel send failed: {}", e);
-                                                                    },
-                                                                };
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                    },
-                                },
-                                None => (),
+                            if s.starts_with('#') {
+                                debug!("{}:{}: {}", host, port, s.trim_end());
                             }
                         },
-
                         Err(e) => {
                             warn!("Unable to read from {}:{}: {}", host, port, e);
                             break;
@@ -431,7 +379,6 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                     }
 
                                 },
-                                _ => (),
                             }
                         },
                         Err(broadcast::error::RecvError::Lagged(n)) => {

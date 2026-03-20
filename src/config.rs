@@ -37,7 +37,6 @@ pub struct AprsisTelemetry {
     pub packets_igated: DataSeries<u32>,
     pub packets_dropped: DataSeries<u32>,
     pub rf_received: DataSeries<u32>,
-    pub inet_received: DataSeries<u32>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]

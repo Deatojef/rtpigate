@@ -37,22 +37,11 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
             // check for updates from the data channel
             message = data_stream.recv() => {
                 match message {
-                    Ok(DataItem::Pkt(p)) => {
-                        match p {
-                            Packet::Inet(p) => {
-                                let key = String::from("inetpacket");
-                                let thejson = json!(p);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    debug!("No SSE subscribers connected");
-                                }
-                            },
-                            Packet::RTP(p) => {
-                                let key = String::from("rfpacket");
-                                let thejson = json!(p);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
-                                    debug!("No SSE subscribers connected");
-                                }
-                            },
+                    Ok(DataItem::Pkt(Packet::RTP(p))) => {
+                        let key = String::from("rfpacket");
+                        let thejson = json!(p);
+                        if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                            debug!("No SSE subscribers connected");
                         }
                     },
 

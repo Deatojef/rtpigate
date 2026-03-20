@@ -701,13 +701,6 @@
             setStatus(rtpStatus, "connected");
         });
 
-        es.addEventListener("inetpacket", function (e) {
-            onMessage();
-            var data = JSON.parse(e.data);
-            addPacketRow("inet", data);
-            setStatus(aprsisStatus, "connected");
-        });
-
         es.addEventListener("packet_statistics", function (e) {
             onMessage();
             var data = JSON.parse(e.data);

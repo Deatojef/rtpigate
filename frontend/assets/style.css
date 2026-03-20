@@ -352,14 +352,6 @@ tr.rf-packet td.pkt-source {
     color: var(--rf-color);
 }
 
-tr.inet-packet td.pkt-source {
-    color: var(--inet-color);
-}
-
-tr.inet-packet td.pkt-freq {
-    color: var(--inet-freq);
-}
-
 /* Last heard table */
 #last-heard {
     background-color: var(--panel-bg);

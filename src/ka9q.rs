@@ -81,43 +81,10 @@ impl RTPPacket {
     }
 }
 
-// the packet structure for internet source packets (i.e. from APRS-IS)
-#[derive(Debug, Clone, Serialize)]
-pub struct InetPacket {
-    // when we initial received this packet over the network
-    pub receivetime: DateTime<Local>,
-
-    // the packet itself 
-    pub raw: String,
-    pub info: String,
-
-    // APRS data type
-    pub ptype: char,
-
-    // source and destination
-    pub source: String,
-
-    // the address of the APRS-IS server
-    pub aprsaddress: String,
-}
-
-impl fmt::Display for InetPacket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{0: <24} {1:}",
-            self.receivetime.format("%Y-%m-%d %H:%M:%S%.3f"), 
-            self.raw,
-        )
-    }
-}
-
-
 // type of packets
 #[derive(Debug, Clone)]
 pub enum Packet {
     RTP(RTPPacket),
-    Inet(InetPacket),
 }
 
 
