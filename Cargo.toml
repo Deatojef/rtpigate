@@ -2,6 +2,10 @@
 name = "rtpigate"
 version = "0.1.0"
 edition = "2024"
+authors = ["Jeff Deaton"]
+description = "APRS iGate for KA9Q-Radio backend"
+license = "MIT"
+repository = "https://github.com/Deatojef/rtpigate"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -19,3 +23,21 @@ axum = { version = "0.8.4", features = ["json"] }
 tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 aprs-parser = { path = "vendor/aprs-parser-rs" }
+
+[package.metadata.deb]
+maintainer = "Jeff Deaton <deatojef@yahoo.com>"
+section = "hamradio"
+priority = "optional"
+extended-description = "Receives AX.25 frames via RTP multicast from KA9Q-Radio, filters them, and gates them to the APRS-IS internet network. Includes a web dashboard with real-time packet display via Server-Sent Events."
+depends = "$auto"
+conf-files = ["/etc/rtpigate/config.toml"]
+maintainer-scripts = "deploy/debian/"
+assets = [
+    ["target/release/rtpigate", "usr/local/bin/", "755"],
+    ["config.toml", "etc/rtpigate/config.toml", "640"],
+    ["frontend/index.html", "usr/local/share/rtpigate/frontend/", "644"],
+    ["frontend/assets/style.css", "usr/local/share/rtpigate/frontend/assets/", "644"],
+    ["frontend/assets/app.js", "usr/local/share/rtpigate/frontend/assets/", "644"],
+    ["frontend/assets/aprssymbols/**/*", "usr/local/share/rtpigate/frontend/assets/aprssymbols/", "644"],
+    ["deploy/rtpigate.service", "lib/systemd/system/rtpigate.service", "644"],
+]

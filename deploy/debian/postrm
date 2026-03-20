@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+# Only remove user on full purge (not on upgrade or remove)
+if [ "$1" = "purge" ]; then
+    if id rtpigate &>/dev/null; then
+        userdel rtpigate 2>/dev/null || true
+    fi
+    rm -rf /etc/rtpigate
+fi

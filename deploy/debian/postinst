@@ -1,0 +1,28 @@
+#!/bin/bash
+set -e
+
+# Create rtpigate system user if it doesn't exist
+if ! id rtpigate &>/dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin rtpigate
+fi
+
+# Set ownership on config (root owns, rtpigate group can read)
+chown root:rtpigate /etc/rtpigate
+chown root:rtpigate /etc/rtpigate/config.toml
+
+# Ensure the [http] section points to installed frontend
+if ! grep -q '\[http\]' /etc/rtpigate/config.toml 2>/dev/null; then
+    echo "" >> /etc/rtpigate/config.toml
+    echo "[http]" >> /etc/rtpigate/config.toml
+    echo 'frontend = "/usr/local/share/rtpigate/frontend"' >> /etc/rtpigate/config.toml
+fi
+
+echo ""
+echo "rtpigate installed successfully."
+echo ""
+echo "Next steps:"
+echo "  1. Edit config:    sudo nano /etc/rtpigate/config.toml"
+echo "  2. Enable service: sudo systemctl enable rtpigate"
+echo "  3. Start service:  sudo systemctl start rtpigate"
+echo "  4. View logs:      journalctl -u rtpigate -f"
+echo "  5. Reload config:  sudo systemctl reload rtpigate"
