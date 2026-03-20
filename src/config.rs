@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fs, ops::Add, error::Error};
+use std::{collections::VecDeque, fs, ops::Add};
 use chrono::{DateTime, Local};
+
+use crate::error::RtpigateError;
 
 use crate::ka9q::Packet;
 
@@ -163,7 +165,7 @@ impl Config {
 
     // attempt to read the TOML syntax from the provided filename string returning a Config structure
     // if successful.
-    pub fn from_file(filename: &str) -> Result<Config, Box<dyn Error>> {
+    pub fn from_file(filename: &str) -> Result<Config, RtpigateError> {
 
         // read in the config file
         let toml_string = fs::read_to_string(filename)?;

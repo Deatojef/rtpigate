@@ -7,6 +7,7 @@ use serde_json::json;
 use log::{info, warn, debug};
 
 use crate::config::{Config, AppTelemetry, DataItem};
+use crate::error::RtpigateError;
 use crate::ka9q::Packet;
 
 
@@ -16,7 +17,7 @@ pub struct SSEEvent {
     pub data: serde_json::Value,
 }
 
-pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: broadcast::Sender<SSEEvent>, token: CancellationToken, _config: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: broadcast::Sender<SSEEvent>, token: CancellationToken, _config: Arc<Config>) -> Result<(), RtpigateError> {
 
     info!("Started");
 

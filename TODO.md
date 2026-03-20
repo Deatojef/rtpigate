@@ -24,4 +24,4 @@
 
 ## Code Quality
 - [ ] Tests — unit tests for droppacket(), positpacket(), passcode(), rfonly/heard-direct detection, telemetry encoding
-- [ ] Error types — replace Box<dyn Error> with a proper enum via thiserror
+- [x] Error types — RtpigateError enum with Network, Io, Parse, Config, Validation variants

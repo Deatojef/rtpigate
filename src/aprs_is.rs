@@ -1,18 +1,19 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, str, io::{self, ErrorKind}, sync::Arc, error::Error};
+use std::{collections::{HashMap, VecDeque}, str, sync::Arc};
 use chrono::{Local, Utc};
 
 use log::{info, warn, debug};
 use tokio::time::sleep;
 
 use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem};
+use crate::error::RtpigateError;
 use crate::ka9q::{InetPacket, Packet};
 use crate::igate::{self, TOCALL, AnalogItem, APRSQuadratic, Telemetry};
 
 
 /// Main APRS-IS task: manages the TCP connection and coordinates igating, beaconing, and telemetry.
-pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), Box<dyn Error>> {
+pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), RtpigateError> {
 
     info!("Started");
 
@@ -47,7 +48,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let host: String = match &config.aprsis.host {
         Some(h) => h.clone(),
         None => {
-            return Err(Box::new(io::Error::new(ErrorKind::Other, format!("Unable to determine APRS-IS host"))));
+            return Err(RtpigateError::Config("Unable to determine APRS-IS host".into()));
         },
     };
 
@@ -55,7 +56,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let port: u32 = match &config.aprsis.port {
         Some(p) => *p,
         None => {
-            return Err(Box::new(io::Error::new(ErrorKind::Other, format!("Unable to determine APRS-IS port number:"))));
+            return Err(RtpigateError::Config("Unable to determine APRS-IS port number".into()));
         },
     };
 
@@ -69,7 +70,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let callsign: String = match &config.station.callsign {
         Some(c) => c.clone(),
         None => {
-            return Err(Box::new(io::Error::new(ErrorKind::Other, format!("Unable to determine this station's callsign"))));
+            return Err(RtpigateError::Config("Unable to determine station callsign".into()));
         },
     };
 
@@ -549,14 +550,14 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
 /// Using the open socket and bufreader stream, attempt to log into the APRS-IS server.
 /// The `rw` parameter indicates whether we expect a verified (read-write) connection.
-async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReader<tcp::OwnedReadHalf>, loginstring: &str, host: &str, port: &u32, rw: bool) -> Result<bool, Box<dyn Error>> {
+async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReader<tcp::OwnedReadHalf>, loginstring: &str, host: &str, port: &u32, rw: bool) -> Result<bool, RtpigateError> {
 
     // read the version line from the aprsis server to ensure a proper connection
     let mut raw = String::new();
 
     match reader.read_line(&mut raw).await {
         Ok(0) => {
-            return Err(format!("Connection closed by {}:{} before login", host, port).into());
+            return Err(RtpigateError::Network(format!("Connection closed by {}:{} before login", host, port)));
         },
         Ok(_numbytes) => {
             debug!("{}:{}: {}", host, port, raw.trim_end());
@@ -570,7 +571,7 @@ async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReade
 
             match reader.read_line(&mut r).await {
                 Ok(0) => {
-                    return Err(format!("Connection closed by {}:{} during login", host, port).into());
+                    return Err(RtpigateError::Network(format!("Connection closed by {}:{} during login", host, port)));
                 },
                 Ok(_n) => {
                     debug!("{}:{}: {}", host, port, r.trim_end());
@@ -588,13 +589,13 @@ async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReade
                 },
 
                 Err(e) => {
-                    return Err(format!("Error reading login response from {}:{}. {}", host, port, e).into());
+                    return Err(RtpigateError::Network(format!("Error reading login response from {}:{}: {}", host, port, e)));
                 }
             }
         },
 
         Err(e) => {
-            return Err(format!("Error reading from {}:{}. {}", host, port, e).into());
+            return Err(RtpigateError::Network(format!("Error reading from {}:{}: {}", host, port, e)));
         }
     }
 

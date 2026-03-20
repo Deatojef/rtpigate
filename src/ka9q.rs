@@ -1,6 +1,6 @@
 use tokio::{net::UdpSocket, sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::VecDeque, io::{self, ErrorKind}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, error::Error, fmt};
+use std::{collections::VecDeque, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt};
 use rtp_rs::RtpReader;
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -11,6 +11,7 @@ use log::{info, warn, error, debug};
 use aprs_parser::{AprsPacket, AprsData};
 
 use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem};
+use crate::error::RtpigateError;
 
 // the packet structure (created by the RTP thread for incoming RTP packets)
 #[derive(Debug, Clone, Serialize)]
@@ -121,26 +122,22 @@ pub enum Packet {
 
 
 // Retuns a SocketAddr from the "hostname:port" string provided
-fn get_multicast_socket_addr(address: &str) -> Result<SocketAddr, Box<dyn Error>> {
+fn get_multicast_socket_addr(address: &str) -> Result<SocketAddr, RtpigateError> {
 
     // convert the address to socket address
-    let mut addrs = match address.to_socket_addrs() {
-        Ok(a) => a,
-        Err(e) => return Err(Box::new(io::Error::new(ErrorKind::Other, format!("Unable to parse address, {} - {}", address, e)))),
-    };
+    let mut addrs = address.to_socket_addrs()
+        .map_err(|e| RtpigateError::Network(format!("Unable to parse address {}: {}", address, e)))?;
 
-    match addrs.next() {
-        Some(socketaddr) => Ok(socketaddr),
-        None => Err(Box::new(io::Error::new(ErrorKind::Other, format!("No valid socket address found for, {}.", address))))
-    }
+    addrs.next()
+        .ok_or_else(|| RtpigateError::Network(format!("No valid socket address found for {}", address)))
 }
 
 
 // return a new UDP socket bound to the provided multicast address
-fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, Box<dyn Error>> {
-    
+fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, RtpigateError> {
+
     if !multicast_addr.ip().is_multicast() {
-        return Err(Box::new(io::Error::new(ErrorKind::AddrNotAvailable, "Address is not a multicast address")));
+        return Err(RtpigateError::Validation(format!("{} is not a multicast address", multicast_addr)));
     }
 
     // create a socket for connecting
@@ -155,23 +152,23 @@ fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, Box
         std_socket.join_multicast_v4(multi_addr, &Ipv4Addr::UNSPECIFIED)?;
         Ok(std_socket.into())
     } else {
-        Err(Box::new(io::Error::new( ErrorKind::AddrNotAvailable, "Only IPv4 multicast is supported in this example")))
+        Err(RtpigateError::Validation("Only IPv4 multicast is supported".into()))
     }
 }
 
 
 // Sets up a UDP socket bound to the given multicast address
-fn setup_multicast_socket(address: &str) -> Result<UdpSocket, Box<dyn Error + Send + Sync>> {
-    let multicast_addr = get_multicast_socket_addr(address).map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
-    let std_socket = bind_multicast(multicast_addr).map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
-    let udp_socket = UdpSocket::from_std(std_socket).map_err(|e| -> Box<dyn Error + Send + Sync> { e.to_string().into() })?;
+fn setup_multicast_socket(address: &str) -> Result<UdpSocket, RtpigateError> {
+    let multicast_addr = get_multicast_socket_addr(address)?;
+    let std_socket = bind_multicast(multicast_addr)?;
+    let udp_socket = UdpSocket::from_std(std_socket)?;
     Ok(udp_socket)
 }
 
 
 // Listens for RTP packets on a given multicast address and calls the parse_rtp_packet function
 // with the parsed RTP header and payload.  Normally, this will never return - it loops forever.
-pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), Box<dyn Error>> {
+pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), RtpigateError> {
 
     info!("Started");
 
@@ -361,7 +358,7 @@ const SAT_FREQS: &[f64] = &[145.825];
 
 // used to parse an incoming RTP packet (w/ AX25 payload) into various source, destination,
 // addresses, info fields.
-fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
+fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
 
     // Attempt to parse the payload
     match Ax25Frame::from_bytes(rtp.payload()) {
@@ -376,7 +373,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
             // get the ax25 frame from the rtp packet's payload
             let ax25infofield = match ax25_frame.content {
                 FrameContent::UnnumberedInformation(information) => information.info,
-                _ => return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz Not an AX.25 UI frame.", frequency)))),
+                _ => return Err(RtpigateError::Parse(format!("{}MHz Not an AX.25 UI frame", frequency))),
             };
 
             let source = ax25_frame.source.to_string();
@@ -427,7 +424,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 // truncate off the last two bytes as those are the FCS crc data for the AX25 frame
                 infodata.truncate(infodata.len()-2);
             } else {
-                return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz AX.25 Frame does not contain an information field, {}", frequency, aprstext))));
+                return Err(RtpigateError::Parse(format!("{}MHz AX.25 frame missing information field: {}", frequency, aprstext)));
             }
 
             // convert the information field for the APRS packet to UTF8 text
@@ -435,7 +432,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 Ok(s) => s,
                 Err(e) => {
                     let lossy_info_field = String::from_utf8_lossy(e.as_bytes());
-                    return Err(Box::new(io::Error::new(ErrorKind::Other, format!("{}MHz Failed to convert to UTF-8: {}:{}. {}", frequency, aprstext, lossy_info_field, e))));
+                    return Err(RtpigateError::Parse(format!("{}MHz UTF-8 conversion failed: {}:{}. {}", frequency, aprstext, lossy_info_field, e)));
                 },
             };
 
@@ -446,7 +443,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
             // the APRS packet type
             let ptype: char = match info.chars().next() {
                 Some(c) => c,
-                None => return Err(Box::new(io::Error::new(ErrorKind::Other, "No APRS data type found.".to_string()))),
+                None => return Err(RtpigateError::Parse("No APRS data type found".into())),
             };
 
             // attempt to parse position data using aprs-parser-rs
@@ -496,7 +493,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, Box<dyn Error>> {
                 altitude_ft,
             })
         },
-        Err(e) => Err(Box::new(io::Error::new(ErrorKind::Other, format!("No RTP packet payload to parse: {:?}", e)))),
+        Err(e) => Err(RtpigateError::Parse(format!("AX.25 frame parse failed: {:?}", e))),
     }
 }
 

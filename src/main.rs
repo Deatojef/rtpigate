@@ -18,6 +18,8 @@ use chrono::Local;
 use flexi_logger::Logger;
 use log::{info, warn, error, debug};
 
+mod error;
+
 mod config;
 use config::{Config, DataItem, PublicConfig, APRSISPasscode};
 

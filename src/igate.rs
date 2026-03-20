@@ -1,10 +1,10 @@
-use std::{io::{self, ErrorKind}, error::Error};
 use chrono::{Local, Utc, Timelike};
 use tokio::{fs, io::AsyncWriteExt};
 
 use log::debug;
 
 use crate::config::Location;
+use crate::error::RtpigateError;
 use crate::ka9q::RTPPacket;
 
 /// TOCALL value for this software. 'APZ' denotes experimental. 'JD1' denotes the version.
@@ -68,14 +68,14 @@ pub fn droppacket(p: &RTPPacket) -> bool {
 // ---- Position beacon construction ----
 
 /// Construct a position packet for beaconing to APRS-IS.
-pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<String>, overlay: &Option<String>) -> Result<String, Box<dyn Error>> {
+pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<String>, overlay: &Option<String>) -> Result<String, RtpigateError> {
 
     match (l.alt, l.lat, l.lon) {
         (Some(alt_ft), Some(lat), Some(lon)) => {
 
             // check for valid lat/lon/alt positions
             if alt_ft <= 0.0 || lat == 0.0 || lon == 0.0 {
-                return Err(Box::new(io::Error::new(ErrorKind::Other, format!("positpacket: Invalid lat/lon/alt."))));
+                return Err(RtpigateError::Validation("positpacket: Invalid lat/lon/alt".into()));
             }
 
             // the time components
@@ -143,7 +143,7 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
         },
 
         _ => {
-            Err(Box::new(io::Error::new(ErrorKind::Other, format!("positpacket: Invalid lat/lon/alt."))))
+            Err(RtpigateError::Validation("positpacket: Missing lat/lon/alt".into()))
         }
     }
 }
@@ -152,7 +152,7 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
 // ---- Telemetry ----
 
 /// Read the telemetry sequence file and return the sequence integer contained within.
-pub async fn read_telemetry_file(filename: &str) -> Result<u32, Box<dyn Error>> {
+pub async fn read_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     debug!("Reading telemetry file, {}", filename);
@@ -161,13 +161,11 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, Box<dyn Error>> 
     let file = match fs::File::open(filename).await {
         Ok(f) => f,
         Err(e) => match e.kind() {
-            ErrorKind::NotFound => {
+            std::io::ErrorKind::NotFound => {
                 create_telemetry_file(filename).await?;
                 fs::File::open(filename).await?
             },
-            _other => {
-                return Err(Box::new(io::Error::new(ErrorKind::Other, format!("Unable to create telemetry sequence file, {}: {}", filename, e))));
-            },
+            _ => return Err(RtpigateError::Io(e)),
         },
     };
 
@@ -175,7 +173,7 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, Box<dyn Error>> 
 
     let first_line = match reader.lines().next_line().await? {
         Some(line) => line,
-        None => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, format!("File, {}, was empty or the first line could not be read.", filename)))),
+        None => return Err(RtpigateError::Parse(format!("Telemetry file {} is empty", filename))),
     };
 
     let number = first_line.trim().parse::<u32>()?;
@@ -183,13 +181,13 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, Box<dyn Error>> 
 }
 
 /// Write the provided sequence number to the filename provided.
-pub async fn write_telemetry_seq(filename: &str, seq: u32) -> Result<u32, Box<dyn Error>> {
+pub async fn write_telemetry_seq(filename: &str, seq: u32) -> Result<u32, RtpigateError> {
     fs::write(filename, format!("{}\n", seq)).await?;
     Ok(seq)
 }
 
 /// Create a telemetry file using the filename provided.
-async fn create_telemetry_file(filename: &str) -> Result<u32, Box<dyn Error>> {
+async fn create_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
     let mut file = fs::File::create(filename).await?;
     file.write_all(b"0\n").await?;
     Ok(0)
@@ -276,10 +274,10 @@ impl Telemetry {
 
     /// Creates a series of APRS telemetry information strings that can then be wrapped in
     /// an APRS packet. These don't use any of the digital bits fields.
-    pub fn to_aprs(&self, callsign: &String) -> Result<Vec<String>, Box<dyn Error>> {
+    pub fn to_aprs(&self, callsign: &String) -> Result<Vec<String>, RtpigateError> {
 
-        if self.telemetry.len() == 0 {
-            return Err(Box::new(io::Error::new(ErrorKind::Other, format!("No telemetry analog items defined."))));
+        if self.telemetry.is_empty() {
+            return Err(RtpigateError::Validation("No telemetry analog items defined".into()));
         }
 
         let mut telem_string = format!("T#{}", self.sequence);
