@@ -80,7 +80,7 @@
         // Sort by most recent first
         var calls = Object.keys(lastHeard);
         calls.sort(function (a, b) {
-            return new Date(lastHeard[b].time) - new Date(lastHeard[a].time);
+            return lastHeard[b].count - lastHeard[a].count;
         });
 
         heardBody.innerHTML = "";
