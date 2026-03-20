@@ -236,6 +236,8 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
             tokio::select! {
 
                 _ = token.cancelled() => {
+                    info!("Shutting down APRS-IS connection to {}:{}", host, port);
+                    let _ = write_half.shutdown().await;
                     break;
                 },
 

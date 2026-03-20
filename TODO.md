@@ -1,7 +1,7 @@
 # TODO - Improvement Ideas
 
 ## Reliability
-- [ ] Graceful shutdown message to APRS-IS — send logout before closing TCP connection
+- [x] Graceful shutdown message to APRS-IS — clean TCP shutdown on cancellation
 - [x] Duplicate packet suppression — 30s TTL dedup cache on source:info key
 - [x] Configurable listen address — via [http] listen in config.toml
 - [x] Fix igating filters: add TCPXX to rfonly, add query (?) drop, fix third-party (}) check
