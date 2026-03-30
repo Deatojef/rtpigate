@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //
     // This is the conduit for sending SSE events
     //
-    let (sse_tx, mut _sse_rx) = broadcast::channel::<SSEEvent>(16);
+    let (sse_tx, mut _sse_rx) = broadcast::channel::<SSEEvent>(128);
 
 
     // The expected number of tasks...incremented as tasks are spawned.

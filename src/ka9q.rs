@@ -266,6 +266,14 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                         warn!("Failed to send statistics data to channel: {}", e);
                     }
 
+                    // Evict stations not heard in the last 36 hours
+                    let evict_threshold = chrono::Duration::hours(36);
+                    let now = Local::now();
+                    station_map.retain(|_, entry| now - entry.last_heard < evict_threshold);
+                    freq_counts.retain(|freq, _| {
+                        station_map.values().any(|e| format!("{:.3}", e.frequency) == *freq)
+                    });
+
                     // Emit station statistics
                     let mut stations: Vec<StationEntry> = station_map.values().cloned().collect();
                     stations.sort_by(|a, b| b.count.cmp(&a.count));
@@ -348,7 +356,7 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                                 entry.longitude = Some(lon);
                                             }
                                             if let Some(alt) = p.altitude_ft {
-                                                entry.altitude_ft = Some(alt);
+                                                entry.altitude_ft = Some(entry.altitude_ft.map_or(alt, |prev| prev.max(alt)));
                                             }
                                             if let Some(st) = sym_table {
                                                 entry.symbol_table = Some(st);

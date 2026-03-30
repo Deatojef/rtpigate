@@ -208,7 +208,7 @@ impl APRSQuadratic {
     pub fn new(orig_value: f64) -> APRSQuadratic {
 
         // if the original value is small (between -255 and +255) we forego the use of the "a" coefficient
-        if orig_value <= 255.0 || orig_value >= -255.0 {
+        if orig_value <= 255.0 && orig_value >= -255.0 {
 
             let x = if orig_value >= 0.0 {
                 orig_value.floor()
