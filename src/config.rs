@@ -64,6 +64,7 @@ pub struct DataPoint<T: Add> {
 #[derive(Serialize, Debug, Clone)]
 pub struct StationEntry {
     pub callsign: String,
+    pub transmitted_by: Option<String>,
     pub last_heard: DateTime<Local>,
     pub frequency: f64,
     pub latitude: Option<f64>,

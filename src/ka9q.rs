@@ -51,6 +51,9 @@ pub struct RTPPacket {
     // was this packet heard from or perhaps, destined to a satellite?
     pub is_satellite: bool,
 
+    // object or item name (if this packet is an object/item report)
+    pub object_name: Option<String>,
+
     // parsed position data (if available)
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
@@ -337,8 +340,13 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                             // extract symbol table/code from info field
                                             let (sym_table, sym_code) = extract_symbol_chars(&p.info, &p.destination);
 
-                                            let entry = station_map.entry(p.source.clone()).or_insert_with(|| StationEntry {
-                                                callsign: p.source.clone(),
+                                            // use object/item name as station key if present
+                                            let station_key = p.object_name.clone().unwrap_or_else(|| p.source.clone());
+                                            let transmitted_by = p.object_name.as_ref().map(|_| p.source.clone());
+
+                                            let entry = station_map.entry(station_key.clone()).or_insert_with(|| StationEntry {
+                                                callsign: station_key,
+                                                transmitted_by: transmitted_by.clone(),
                                                 last_heard: p.receivetime,
                                                 frequency: p.frequency,
                                                 latitude: None,
@@ -356,6 +364,9 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                             entry.last_heard = p.receivetime;
                                             entry.frequency = p.frequency;
                                             entry.heard_direct = p.heard_direct;
+                                            if let Some(ref tb) = transmitted_by {
+                                                entry.transmitted_by = Some(tb.clone());
+                                            }
                                             entry.count += 1;
                                             if p.latitude.is_some() && p.longitude.is_some() {
                                                 entry.latitude = p.latitude;
@@ -523,6 +534,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
 
             // attempt to parse position data using aprs-parser-rs
             let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
+            let mut object_name: Option<String> = None;
             if let Ok(parsed) = AprsPacket::decode_textual(aprstext.as_bytes()) {
                 match parsed.data {
                     AprsData::Position(pos) => {
@@ -545,6 +557,32 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                             altitude_ft = Some(alt.altitude_feet());
                         }
                     },
+                    AprsData::Object(obj) => {
+                        object_name = Some(String::from_utf8_lossy(&obj.name).to_string());
+                        latitude = Some(*obj.position.latitude);
+                        longitude = Some(*obj.position.longitude);
+                        let comment = String::from_utf8_lossy(&obj.comment);
+                        if let Some(alt_idx) = comment.find("/A=") {
+                            let alt_str = &comment[alt_idx + 3..];
+                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
+                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
+                                altitude_ft = Some(alt);
+                            }
+                        }
+                    },
+                    AprsData::Item(item) => {
+                        object_name = Some(String::from_utf8_lossy(&item.name).to_string());
+                        latitude = Some(*item.position.latitude);
+                        longitude = Some(*item.position.longitude);
+                        let comment = String::from_utf8_lossy(&item.comment);
+                        if let Some(alt_idx) = comment.find("/A=") {
+                            let alt_str = &comment[alt_idx + 3..];
+                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
+                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
+                                altitude_ft = Some(alt);
+                            }
+                        }
+                    },
                     _ => {},
                 }
             }
@@ -565,6 +603,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 destination,
                 raw: aprstext,
                 info,
+                object_name,
                 latitude,
                 longitude,
                 altitude_ft,
@@ -619,6 +658,46 @@ fn extract_symbol_chars(info: &str, _destination: &str) -> (Option<char>, Option
             // Mic-E: symbol at chars[7], table at chars[8]
             if chars.len() >= 9 {
                 return (Some(chars[8]), Some(chars[7]));
+            }
+        },
+        ';' => {
+            // Object: ;name(9)*timestamp(7)position...
+            // offset 0=';', 1-9=name, 10=live/dead, 11-17=timestamp, 18+=position
+            if chars.len() >= 19 {
+                let c18 = chars[18];
+                if c18.is_ascii_digit() {
+                    // uncompressed: table at offset 26, code at offset 36
+                    if chars.len() >= 37 {
+                        return (Some(chars[26]), Some(chars[36]));
+                    }
+                } else {
+                    // compressed: table at offset 18, code at offset 27
+                    if chars.len() >= 28 {
+                        return (Some(c18), Some(chars[27]));
+                    }
+                }
+            }
+        },
+        ')' => {
+            // Item: )name(3-9)live/dead position...
+            // find the live/dead marker ('!' or ' ') to locate position start
+            let name_end = chars[1..].iter().take(9).position(|&c| c == '!' || c == ' ');
+            if let Some(ne) = name_end {
+                let pos_start = 1 + ne + 1; // skip ')' + name + live/dead marker
+                if chars.len() > pos_start {
+                    let c = chars[pos_start];
+                    if c.is_ascii_digit() {
+                        // uncompressed: table at pos_start+8, code at pos_start+18
+                        if chars.len() >= pos_start + 19 {
+                            return (Some(chars[pos_start + 8]), Some(chars[pos_start + 18]));
+                        }
+                    } else {
+                        // compressed: table at pos_start, code at pos_start+9
+                        if chars.len() >= pos_start + 10 {
+                            return (Some(c), Some(chars[pos_start + 9]));
+                        }
+                    }
+                }
             }
         },
         _ => {},

@@ -193,6 +193,12 @@
             callLink.rel = "noopener";
             callLink.textContent = s.callsign;
             tdCall.appendChild(callLink);
+            if (s.transmitted_by) {
+                var bySpan = document.createElement("span");
+                bySpan.className = "transmitted-by";
+                bySpan.textContent = " via " + s.transmitted_by;
+                tdCall.appendChild(bySpan);
+            }
             tr.appendChild(tdCall);
 
             // Last Heard
@@ -600,12 +606,12 @@
         }
         // Mic-E: ` or ' — position is encoded in the destination field, which we
         // don't have readily available here, so skip for now.
-        // Objects: ;name_____*DDMM.MMN/DDDMM.MMW...
+        // Objects: ;name(9)*timestamp(7)DDMM.MMN/DDDMM.MMW...
         else if (dataType === ";") {
             var starIdx = info.indexOf("*");
             if (starIdx === -1) starIdx = info.indexOf("_");
             if (starIdx >= 0) {
-                var objPos = info.substring(starIdx + 1);
+                var objPos = info.substring(starIdx + 8); // skip live/dead(1) + timestamp(7)
                 if (objPos.length >= 18) {
                     var lat3 = parseDDMM(objPos.substring(0, 7), objPos.charAt(7));
                     var lon3 = parseDDMM(objPos.substring(9, 17), objPos.charAt(17));
@@ -670,11 +676,28 @@
                 tableChar = info.charAt(8);
             }
         } else if (dataType === ";") {
+            // Object: ;name(9)*timestamp(7)position...
+            // starIdx points at '*' or '_' (live/dead marker at fixed offset 10)
             var starIdx = info.indexOf("*");
             if (starIdx === -1) starIdx = info.indexOf("_");
-            if (starIdx >= 0 && info.length >= starIdx + 10) {
-                tableChar = info.charAt(starIdx + 9);
-                if (info.length >= starIdx + 20) symbolChar = info.charAt(starIdx + 19);
+            if (starIdx >= 0) {
+                var posStart = starIdx + 8; // skip live/dead(1) + timestamp(7)
+                if (info.length > posStart) {
+                    var posChar = info.charAt(posStart);
+                    if (posChar >= "0" && posChar <= "9") {
+                        // uncompressed: table at posStart+8, code at posStart+18
+                        if (info.length >= posStart + 19) {
+                            tableChar = info.charAt(posStart + 8);
+                            symbolChar = info.charAt(posStart + 18);
+                        }
+                    } else {
+                        // compressed: table at posStart, code at posStart+9
+                        if (info.length >= posStart + 10) {
+                            tableChar = posChar;
+                            symbolChar = info.charAt(posStart + 9);
+                        }
+                    }
+                }
             }
         }
 
@@ -891,12 +914,19 @@
         // Source
         var tdSource = document.createElement("td");
         tdSource.className = "pkt-source";
+        var displaySource = data.object_name || data.source;
         var srcLink = document.createElement("a");
-        srcLink.href = aprsfiUrl(data.source);
+        srcLink.href = aprsfiUrl(displaySource);
         srcLink.target = "_blank";
         srcLink.rel = "noopener";
-        srcLink.textContent = data.source;
+        srcLink.textContent = displaySource;
         tdSource.appendChild(srcLink);
+        if (data.object_name) {
+            var bySpan = document.createElement("span");
+            bySpan.className = "transmitted-by";
+            bySpan.textContent = " via " + data.source;
+            tdSource.appendChild(bySpan);
+        }
         tr.appendChild(tdSource);
 
         // Frequency

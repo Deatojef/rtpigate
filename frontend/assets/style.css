@@ -644,6 +644,11 @@ tr.rf-packet td.pkt-source a:hover {
     color: var(--text-muted);
 }
 
+.transmitted-by {
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
 /* ---- Responsive mobile layout ---- */
 @media (max-width: 768px) {
     body {
