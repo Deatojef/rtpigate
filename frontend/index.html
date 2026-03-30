@@ -86,22 +86,26 @@
 
         <section id="packets">
             <h2>Recent Packets</h2>
-            <table id="packet-table">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th></th>
-                        <th>Source</th>
-                        <th>Freq</th>
-                        <th>Direct</th>
-                        <th>Satellite</th>
-                        <th>Coordinates</th>
-                        <th>Packet</th>
-                    </tr>
-                </thead>
-                <tbody id="packet-body">
-                </tbody>
-            </table>
+            <div id="packet-scroll">
+                <table id="packet-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th></th>
+                            <th>Source</th>
+                            <th>Freq</th>
+                            <th>Direct</th>
+                            <th>Sat</th>
+                            <th>Coordinates</th>
+                            <th>Hops</th>
+                            <th>Path</th>
+                            <th>Packet</th>
+                        </tr>
+                    </thead>
+                    <tbody id="packet-body">
+                    </tbody>
+                </table>
+            </div>
         </section>
 
         <section id="last-heard">

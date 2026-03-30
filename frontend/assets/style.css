@@ -320,10 +320,12 @@ main {
     padding-bottom: 4px;
 }
 
+#packet-scroll {
+    overflow-x: auto;
+}
+
 #packet-table {
-    width: 100%;
     border-collapse: collapse;
-    table-layout: fixed;
 }
 
 #packet-table thead th {
@@ -333,17 +335,12 @@ main {
     text-align: left;
     padding: 2px 6px;
     font-weight: normal;
+    white-space: nowrap;
 }
 
-/* Fixed column widths using ch units (character widths in monospace) */
-#packet-table th:nth-child(1) { width: 9ch; }               /* Time: HH:MM:SS */
-#packet-table th:nth-child(2) { width: 3ch; }               /* Symbol icon */
-#packet-table th:nth-child(3) { width: 12ch; }              /* Source callsign */
-#packet-table th:nth-child(4) { width: 10ch; }              /* Freq: 144.390 + highlight padding */
-#packet-table th:nth-child(5) { width: 7ch; text-align: center; }   /* Direct */
-#packet-table th:nth-child(6) { width: 10ch; text-align: center; }  /* Satellite */
-#packet-table th:nth-child(7) { width: 30ch; }              /* Coordinates */
-/* th:nth-child(8) Packet gets remaining space */
+#packet-table th:nth-child(5) { text-align: center; }  /* Direct */
+#packet-table th:nth-child(6) { text-align: center; }  /* Sat */
+#packet-table th:nth-child(8) { text-align: center; }  /* Hops */
 
 #packet-table tbody td {
     padding: 2px 6px;
@@ -366,7 +363,6 @@ td.pkt-time {
 }
 
 td.pkt-symbol {
-    width: 20px;
     text-align: center;
 }
 
@@ -417,11 +413,19 @@ td.pkt-coords .pkt-distance {
     color: var(--text-muted);
 }
 
-td.pkt-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
+td.pkt-hops {
+    text-align: center;
+    font-size: 0.9em;
     color: var(--text-muted);
-    max-width: 0;
+}
+
+td.pkt-path {
+    font-size: 0.9em;
+    color: var(--text-secondary);
+}
+
+td.pkt-text {
+    color: var(--text-muted);
     cursor: pointer;
 }
 
@@ -607,6 +611,17 @@ tr.rf-packet td.pkt-source a:hover {
     color: var(--text-secondary);
 }
 
+#heard-table td.heard-path {
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+#heard-table td.heard-hops {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    text-align: center;
+}
+
 #heard-table td.heard-coords .pkt-distance {
     color: var(--text-muted);
 }
@@ -635,20 +650,6 @@ tr.rf-packet td.pkt-source a:hover {
 
     .stat-group {
         min-width: unset;
-    }
-
-    #packet-table {
-        table-layout: auto;
-    }
-
-    /* Hide less critical columns on mobile */
-    #packet-table th:nth-child(5),
-    #packet-table td:nth-child(5),
-    #packet-table th:nth-child(6),
-    #packet-table td:nth-child(6),
-    #packet-table th:nth-child(7),
-    #packet-table td:nth-child(7) {
-        display: none;
     }
 
     /* Tabs scroll on mobile */

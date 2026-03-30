@@ -128,7 +128,7 @@
                 stations.sort(function (a, b) { return b._dist - a._dist; });
             }
             showDistance = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Distance"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Path", "Hops", "Distance"];
         } else if (activeTab === "nearest") {
             stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
             if (stationLat !== null && stationLon !== null) {
@@ -136,12 +136,12 @@
                 stations.sort(function (a, b) { return a._dist - b._dist; });
             }
             showDistance = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Distance"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Path", "Hops", "Distance"];
         } else if (activeTab === "highest-alt") {
             stations = stations.filter(function (s) { return s.altitude_ft != null; });
             stations.sort(function (a, b) { return b.altitude_ft - a.altitude_ft; });
             showAltitude = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Position"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Position", "Path", "Hops"];
         }
 
         // Update table headers
@@ -226,6 +226,22 @@
                     tdPos.textContent = "--";
                 }
                 tr.appendChild(tdPos);
+
+                // Path (from max altitude packet)
+                var tdAltPath = document.createElement("td");
+                tdAltPath.className = "heard-path";
+                if (s.altitude_path && s.altitude_path.length > 0) {
+                    tdAltPath.textContent = s.altitude_path.join(", ");
+                } else {
+                    tdAltPath.textContent = "--";
+                }
+                tr.appendChild(tdAltPath);
+
+                // Hops (from max altitude packet)
+                var tdAltHops = document.createElement("td");
+                tdAltHops.className = "heard-hops";
+                tdAltHops.textContent = s.altitude_hops != null ? s.altitude_hops : "0";
+                tr.appendChild(tdAltHops);
             } else if (showDistance) {
                 // Position
                 var tdCoords = document.createElement("td");
@@ -242,6 +258,22 @@
                     tdCoords.textContent = "--";
                 }
                 tr.appendChild(tdCoords);
+
+                // Path (from position-setting packet)
+                var tdPosPath = document.createElement("td");
+                tdPosPath.className = "heard-path";
+                if (s.position_path && s.position_path.length > 0) {
+                    tdPosPath.textContent = s.position_path.join(", ");
+                } else {
+                    tdPosPath.textContent = "--";
+                }
+                tr.appendChild(tdPosPath);
+
+                // Hops (from position-setting packet)
+                var tdPosHops = document.createElement("td");
+                tdPosHops.className = "heard-hops";
+                tdPosHops.textContent = s.position_hops != null ? s.position_hops : "0";
+                tr.appendChild(tdPosHops);
 
                 // Distance
                 var tdDist = document.createElement("td");
@@ -939,6 +971,26 @@
             tdCoords.textContent = "--";
         }
         tr.appendChild(tdCoords);
+
+        // Hops
+        var tdHops = document.createElement("td");
+        tdHops.className = "pkt-hops";
+        if (type === "rf") {
+            tdHops.textContent = data.hops != null ? data.hops : "0";
+        } else {
+            tdHops.textContent = "--";
+        }
+        tr.appendChild(tdHops);
+
+        // Path
+        var tdPath = document.createElement("td");
+        tdPath.className = "pkt-path";
+        if (type === "rf" && data.digipeater_path && data.digipeater_path.length > 0) {
+            tdPath.textContent = data.digipeater_path.join(", ");
+        } else {
+            tdPath.textContent = "--";
+        }
+        tr.appendChild(tdPath);
 
         // Packet text (info field) — click to show full raw packet
         var tdText = document.createElement("td");

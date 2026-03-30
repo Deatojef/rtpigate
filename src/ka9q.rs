@@ -27,6 +27,10 @@ pub struct RTPPacket {
     // viapath
     pub path: String,
 
+    // filtered digipeater path (excludes WIDE*, TCPIP, etc.)
+    pub digipeater_path: Vec<String>,
+    pub hops: u32,
+
     // APRS data type
     pub ptype: char,
 
@@ -341,6 +345,10 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                                 longitude: None,
                                                 altitude_ft: None,
                                                 heard_direct: p.heard_direct,
+                                                position_path: p.digipeater_path.clone(),
+                                                position_hops: p.hops,
+                                                altitude_path: p.digipeater_path.clone(),
+                                                altitude_hops: p.hops,
                                                 symbol_table: None,
                                                 symbol_code: None,
                                                 count: 0,
@@ -349,13 +357,17 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                             entry.frequency = p.frequency;
                                             entry.heard_direct = p.heard_direct;
                                             entry.count += 1;
-                                            if let Some(lat) = p.latitude {
-                                                entry.latitude = Some(lat);
-                                            }
-                                            if let Some(lon) = p.longitude {
-                                                entry.longitude = Some(lon);
+                                            if p.latitude.is_some() && p.longitude.is_some() {
+                                                entry.latitude = p.latitude;
+                                                entry.longitude = p.longitude;
+                                                entry.position_path = p.digipeater_path.clone();
+                                                entry.position_hops = p.hops;
                                             }
                                             if let Some(alt) = p.altitude_ft {
+                                                if entry.altitude_ft.is_none_or(|prev| alt > prev) {
+                                                    entry.altitude_path = p.digipeater_path.clone();
+                                                    entry.altitude_hops = p.hops;
+                                                }
                                                 entry.altitude_ft = Some(entry.altitude_ft.map_or(alt, |prev| prev.max(alt)));
                                             }
                                             if let Some(st) = sym_table {
@@ -445,6 +457,13 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 .map(|(s, _)| s.as_str())
                 .collect::<Vec<&str>>()
                 .join(",");
+
+            // filtered digipeater path (real callsigns only, no WIDE/TCPIP/etc.)
+            let digipeater_path: Vec<String> = route_strings.iter()
+                .filter(|(s, _)| EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
+                .map(|(s, _)| s.clone())
+                .collect();
+            let hops = digipeater_path.len() as u32;
 
             // build the APRS text efficiently using push_str
             let mut aprstext = String::with_capacity(source.len() + destination.len() + viapath.len() + 64);
@@ -536,6 +555,8 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 is_satellite: SAT_FREQS.contains(&frequency),
                 frequency,
                 path: viapath,
+                digipeater_path,
+                hops,
                 heardfrom,
                 heard_direct,
                 rfonly,
