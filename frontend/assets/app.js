@@ -230,11 +230,7 @@
                 // Path (from max altitude packet)
                 var tdAltPath = document.createElement("td");
                 tdAltPath.className = "heard-path";
-                if (s.altitude_path && s.altitude_path.length > 0) {
-                    tdAltPath.textContent = s.altitude_path.join(", ");
-                } else {
-                    tdAltPath.textContent = "--";
-                }
+                fillPathCell(tdAltPath, s.altitude_path);
                 tr.appendChild(tdAltPath);
 
                 // Hops (from max altitude packet)
@@ -262,11 +258,7 @@
                 // Path (from position-setting packet)
                 var tdPosPath = document.createElement("td");
                 tdPosPath.className = "heard-path";
-                if (s.position_path && s.position_path.length > 0) {
-                    tdPosPath.textContent = s.position_path.join(", ");
-                } else {
-                    tdPosPath.textContent = "--";
-                }
+                fillPathCell(tdPosPath, s.position_path);
                 tr.appendChild(tdPosPath);
 
                 // Hops (from position-setting packet)
@@ -715,6 +707,23 @@
         return "https://aprs.fi/#!call=" + encodeURIComponent(callsign);
     }
 
+    // ---- Path cell helper ----
+    function fillPathCell(td, pathArray) {
+        if (pathArray && pathArray.length > 0) {
+            for (var i = 0; i < pathArray.length; i++) {
+                if (i > 0) td.appendChild(document.createTextNode(", "));
+                var a = document.createElement("a");
+                a.href = aprsfiUrl(pathArray[i]);
+                a.target = "_blank";
+                a.rel = "noopener";
+                a.textContent = pathArray[i];
+                td.appendChild(a);
+            }
+        } else {
+            td.textContent = "--";
+        }
+    }
+
     // ---- Map URL helper ----
 
     var isApplePlatform = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent);
@@ -985,11 +994,7 @@
         // Path
         var tdPath = document.createElement("td");
         tdPath.className = "pkt-path";
-        if (type === "rf" && data.digipeater_path && data.digipeater_path.length > 0) {
-            tdPath.textContent = data.digipeater_path.join(", ");
-        } else {
-            tdPath.textContent = "--";
-        }
+        fillPathCell(tdPath, type === "rf" ? data.digipeater_path : null);
         tr.appendChild(tdPath);
 
         // Packet text (info field) — click to show full raw packet

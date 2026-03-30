@@ -424,6 +424,15 @@ td.pkt-path {
     color: var(--text-secondary);
 }
 
+td.pkt-path a {
+    color: inherit;
+    text-decoration: none;
+}
+
+td.pkt-path a:hover {
+    text-decoration: underline;
+}
+
 td.pkt-text {
     color: var(--text-muted);
     cursor: pointer;
@@ -614,6 +623,15 @@ tr.rf-packet td.pkt-source a:hover {
 #heard-table td.heard-path {
     font-size: 0.9em;
     color: var(--text-muted);
+}
+
+#heard-table td.heard-path a {
+    color: inherit;
+    text-decoration: none;
+}
+
+#heard-table td.heard-path a:hover {
+    text-decoration: underline;
 }
 
 #heard-table td.heard-hops {
