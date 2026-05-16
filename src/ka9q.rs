@@ -68,6 +68,11 @@ pub struct RTPPacket {
     // was this packet heard from or perhaps, destined to a satellite?
     pub is_satellite: bool,
 
+    // whether this packet would be igated by droppacket() at receive time.
+    // Mirrors what aprs_is.rs will decide, minus the dedup step — duplicates
+    // within the gating window are still counted as "would-igate" here.
+    pub igated: bool,
+
     // object or item name (if this packet is an object/item report)
     pub object_name: Option<String>,
 
@@ -182,12 +187,20 @@ fn setup_multicast_socket(address: &str) -> Result<UdpSocket, RtpigateError> {
 
 // Listens for RTP packets on a given multicast address and calls the parse_rtp_packet function
 // with the parsed RTP header and payload.  Normally, this will never return - it loops forever.
-pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), RtpigateError> {
+pub async fn rtp_listener(
+    data_channel: broadcast::Sender<DataItem>,
+    token: CancellationToken,
+    config: Arc<Config>,
+    sat_packet_log: Arc<std::sync::RwLock<VecDeque<RTPPacket>>>,
+) -> Result<(), RtpigateError> {
 
     info!("Started");
 
     // get the address and port of the multicast end point we need to connect too
     let address = format!("{}:{}", config.rtp.host, config.rtp.port);
+
+    // satellite frequencies sourced from config (default [145.825] if unset)
+    let sat_freqs = config.satellite_frequencies();
 
     // per-interval statistics
     let mut heard_direct = 0;
@@ -317,6 +330,18 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                     let evict_threshold = chrono::Duration::hours(36);
                     let now = Local::now();
                     station_map.retain(|_, entry| now - entry.last_heard < evict_threshold);
+
+                    // Prune the satellite packet log of entries older than 24 hours.
+                    let sat_log_threshold = chrono::Duration::hours(24);
+                    if let Ok(mut log) = sat_packet_log.write() {
+                        while let Some(front) = log.front() {
+                            if now - front.receivetime > sat_log_threshold {
+                                log.pop_front();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                     freq_counts.retain(|freq, _| {
                         station_map.values().any(|e| format!("{:.3}", e.frequency) == *freq)
                     });
@@ -361,7 +386,12 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                     // decode this packet into APRS then add it to downstream consumer queues
                                     // (i.e. aprs-is connection for igating, database writes, etc.)
                                     match parse_rtp_packet(rtp) {
-                                        Ok(p) => {
+                                        Ok(mut p) => {
+
+                                            // Apply runtime-config-driven flags. is_satellite must be
+                                            // set before droppacket() so the sat-frequency policy fires.
+                                            p.is_satellite = sat_freqs.contains(&p.frequency);
+                                            p.igated = crate::igate::droppacket(&p).is_none();
 
                                             if p.heard_direct {
                                                 heard_direct += 1;
@@ -431,6 +461,14 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
                                             // log this
                                             debug!("{:3.3}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
+                                            // append to the 24h satellite packet log (newest-first
+                                            // ordering is maintained at read time).
+                                            if p.is_satellite {
+                                                if let Ok(mut log) = sat_packet_log.write() {
+                                                    log.push_back(p.clone());
+                                                }
+                                            }
+
                                             // attempt to send this packet to the channel so downstream
                                             // consumers can process this packet.
                                             if let Err(e) = data_channel.send(DataItem::Pkt(Packet::RTP(p))) {
@@ -473,7 +511,6 @@ pub async fn rtp_listener(data_channel: broadcast::Sender<DataItem>, token: Canc
 // Constant slices for packet classification — no heap allocation per packet
 const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
 const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
-const SAT_FREQS: &[f64] = &[145.825];
 
 // used to parse an incoming RTP packet (w/ AX25 payload) into various source, destination,
 // addresses, info fields.
@@ -633,11 +670,13 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 }
             }
 
-            // return a new Packet structure
+            // return a new Packet structure. is_satellite and igated are set
+            // by rtp_listener after parsing, since they depend on runtime config.
             Ok(RTPPacket {
                 receivetime,
                 received_instant,
-                is_satellite: SAT_FREQS.contains(&frequency),
+                is_satellite: false,
+                igated: false,
                 frequency,
                 path: viapath,
                 digipeater_path,

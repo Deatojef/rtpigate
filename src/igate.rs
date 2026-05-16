@@ -73,10 +73,11 @@ pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
     // This uses `was_digipeated` rather than `heard_direct` because the latter
     // intentionally ignores WIDE-class digipeaters, which would let a fill-in-relayed
     // packet incorrectly fall into the "direct" branch.
-    const SAT_FREQS: &[f64] = &[145.825];
+    // The set of satellite frequencies is sourced from config and flagged on the
+    // packet itself (see ka9q::rtp_listener).
     const KNOWN_SATS: &[&str] = &["RS0ISS", "NA1SS", "DP0ISS", "OR4ISS", "IR0ISS", "DP0SNX"];
     if !p.was_digipeated
-        && SAT_FREQS.contains(&p.frequency)
+        && p.is_satellite
         && !KNOWN_SATS.iter().any(|s| s.eq_ignore_ascii_case(&p.source))
     {
         return Some(DropReason::SatelliteDirect);

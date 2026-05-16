@@ -11,7 +11,7 @@ use tokio::{sync::broadcast, task::JoinSet};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 use tokio_stream::{Stream, wrappers::BroadcastStream, StreamExt};
-use std::{sync::{Arc, RwLock}, error::Error, convert::Infallible};
+use std::{collections::VecDeque, sync::{Arc, RwLock}, error::Error, convert::Infallible};
 use chrono::Local;
 
 // for logging
@@ -24,7 +24,7 @@ mod config;
 use config::{Config, DataItem, PublicConfig, APRSISPasscode};
 
 mod ka9q;
-use ka9q::rtp_listener;
+use ka9q::{rtp_listener, RTPPacket};
 
 mod aprs_is;
 use aprs_is::aprsis_task;
@@ -40,6 +40,7 @@ use sse::{sse_task, SSEEvent};
 struct AppState {
     sse_channel: broadcast::Sender<SSEEvent>,
     public_config: Arc<RwLock<PublicConfig>>,
+    sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>>,
 }
 
 impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
@@ -51,6 +52,12 @@ impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
 impl FromRef<AppState> for Arc<RwLock<PublicConfig>> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.public_config.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<RwLock<VecDeque<RTPPacket>>> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.sat_packet_log.clone()
     }
 }
 
@@ -152,14 +159,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     //#################
+    // 24h rolling log of satellite packets, shared between the RTP listener (writer)
+    // and the /api/satellite-packets HTTP handler (reader).
+    //#################
+    let sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>> = Arc::new(RwLock::new(VecDeque::new()));
+
+    //#################
     // rtp_listener task
     //#################
     let rtp_tx_sender = data_tx.clone();
     let rtp_config = Arc::clone(&shared_config);
     let rtp_token = cancel_token.clone();
+    let rtp_sat_log = Arc::clone(&sat_packet_log);
 
     task_set.spawn(async move {
-        if let Err(e) = rtp_listener(rtp_tx_sender, rtp_token, rtp_config).await {
+        if let Err(e) = rtp_listener(rtp_tx_sender, rtp_token, rtp_config, rtp_sat_log).await {
             error!("Unable to create RTP listener task: {}", e);
         }
     });
@@ -217,6 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let app_state = AppState {
             sse_channel: sse_tx,
             public_config: shared_public_config.clone(),
+            sat_packet_log: Arc::clone(&sat_packet_log),
         };
 
         // resolve frontend assets path
@@ -231,6 +246,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let app = Router::new()
             .route("/api/sse", get(sse_handler))
             .route("/api/config", get(config_handler))
+            .route("/api/satellite-packets", get(satellite_packets_handler))
             .nest_service("/assets", ServeDir::new(&assets_dir))
             .fallback_service(ServeDir::new(frontend_dir).append_index_html_on_directories(true))
             .with_state(app_state);
@@ -336,6 +352,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn config_handler(State(config): State<Arc<RwLock<PublicConfig>>>) -> Json<PublicConfig> {
     let cfg = config.read().unwrap().clone();
     Json(cfg)
+}
+
+// satellite_packets_handler - returns the 24h rolling log of satellite packets,
+// newest-first.
+async fn satellite_packets_handler(
+    State(log): State<Arc<RwLock<VecDeque<RTPPacket>>>>,
+) -> Json<Vec<RTPPacket>> {
+    let snapshot: Vec<RTPPacket> = match log.read() {
+        Ok(guard) => guard.iter().rev().cloned().collect(),
+        Err(_) => Vec::new(),
+    };
+    Json(snapshot)
 }
 
 // sse_handler

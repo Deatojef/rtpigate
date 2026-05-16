@@ -44,6 +44,12 @@
     var freqChart = document.getElementById("freq-chart");
     var heardTable = document.getElementById("heard-table");
 
+    // Satellite packet log (newest-first). Seeded from /api/satellite-packets on
+    // load, then appended to live as rfpacket SSE events arrive with
+    // is_satellite=true. Pruned to 24h on every render.
+    var satPackets = [];
+    var SAT_LOG_MS = 24 * 60 * 60 * 1000;
+
 
     // ---- Uptime display ----
 
@@ -101,15 +107,22 @@
     }
 
     function renderStations() {
-        if (!stationData) return;
-
         if (activeTab === "frequencies") {
+            if (!stationData) return;
             heardTable.style.display = "none";
             freqChart.style.display = "block";
             renderFrequencies();
             return;
         }
 
+        if (activeTab === "satellites") {
+            heardTable.style.display = "";
+            freqChart.style.display = "none";
+            renderSatellitePackets();
+            return;
+        }
+
+        if (!stationData) return;
         heardTable.style.display = "";
         freqChart.style.display = "none";
 
@@ -349,6 +362,134 @@
         }
     }
 
+    function renderSatellitePackets() {
+        pruneSatPackets();
+
+        var headers = ["", "Callsign", "Time", "Igate", "Altitude (ft)",
+                       "Position", "Path", "Hops", "Distance"];
+
+        heardThead.innerHTML = "";
+        var headerRow = document.createElement("tr");
+        for (var h = 0; h < headers.length; h++) {
+            var th = document.createElement("th");
+            th.textContent = headers[h];
+            headerRow.appendChild(th);
+        }
+        heardThead.appendChild(headerRow);
+
+        heardBody.innerHTML = "";
+
+        if (satPackets.length === 0) {
+            var emptyTr = document.createElement("tr");
+            var emptyTd = document.createElement("td");
+            emptyTd.colSpan = headers.length;
+            emptyTd.className = "empty-state";
+            emptyTd.textContent = "No satellite packets in the last 24 hours";
+            emptyTr.appendChild(emptyTd);
+            heardBody.appendChild(emptyTr);
+            return;
+        }
+
+        for (var i = 0; i < satPackets.length; i++) {
+            var p = satPackets[i];
+            var tr = document.createElement("tr");
+
+            // Symbol
+            var tdSymbol = document.createElement("td");
+            var imgSrc = getSymbolImage(p.info, p.destination);
+            if (imgSrc) {
+                var img = document.createElement("img");
+                img.src = imgSrc;
+                img.alt = "";
+                img.onerror = function () { this.parentNode.removeChild(this); };
+                tdSymbol.appendChild(img);
+            }
+            tr.appendChild(tdSymbol);
+
+            // Callsign (with "via" if object/item)
+            var tdCall = document.createElement("td");
+            var displaySource = p.object_name || p.source;
+            var callLink = document.createElement("a");
+            callLink.href = aprsfiUrl(displaySource);
+            callLink.target = "_blank";
+            callLink.rel = "noopener";
+            callLink.textContent = displaySource;
+            tdCall.appendChild(callLink);
+            if (p.object_name) {
+                var bySpan = document.createElement("span");
+                bySpan.className = "transmitted-by";
+                bySpan.textContent = " via " + p.source;
+                tdCall.appendChild(bySpan);
+            }
+            tr.appendChild(tdCall);
+
+            // Time
+            var tdTime = document.createElement("td");
+            tdTime.textContent = formatTime(p.receivetime);
+            tr.appendChild(tdTime);
+
+            // Igate (T green / F plain)
+            var tdIgate = document.createElement("td");
+            if (p.igated) {
+                var markI = document.createElement("mark");
+                markI.className = "highlight-true";
+                markI.textContent = "T";
+                tdIgate.appendChild(markI);
+            } else {
+                tdIgate.textContent = "F";
+            }
+            tr.appendChild(tdIgate);
+
+            // Altitude
+            var tdAlt = document.createElement("td");
+            tdAlt.textContent = p.altitude_ft != null
+                ? Math.round(p.altitude_ft).toLocaleString() + " ft"
+                : "--";
+            tr.appendChild(tdAlt);
+
+            // Position
+            var tdPos = document.createElement("td");
+            tdPos.className = "heard-coords";
+            if (p.latitude != null && p.longitude != null) {
+                var posLink = document.createElement("a");
+                posLink.href = mapUrl(p.latitude, p.longitude, displaySource);
+                posLink.target = "_blank";
+                posLink.rel = "noopener";
+                posLink.className = "coord-link";
+                posLink.textContent = p.latitude.toFixed(6) + ", " + p.longitude.toFixed(6);
+                tdPos.appendChild(posLink);
+            } else {
+                tdPos.textContent = "--";
+            }
+            tr.appendChild(tdPos);
+
+            // Path
+            var tdPath = document.createElement("td");
+            tdPath.className = "heard-path";
+            fillPathCell(tdPath, p.digipeater_path);
+            tr.appendChild(tdPath);
+
+            // Hops
+            var tdHops = document.createElement("td");
+            tdHops.className = "heard-hops";
+            tdHops.textContent = p.hops != null ? p.hops : "0";
+            tr.appendChild(tdHops);
+
+            // Distance
+            var tdDist = document.createElement("td");
+            if (p.latitude != null && p.longitude != null
+                && stationLat !== null && stationLon !== null) {
+                var d = haversineDistance(stationLat, stationLon, p.latitude, p.longitude);
+                tdDist.textContent = Math.round(d) + " mi";
+            } else {
+                tdDist.textContent = "--";
+            }
+            tr.appendChild(tdDist);
+
+            heardBody.appendChild(tr);
+        }
+    }
+
     // ---- Info tooltips (hover + tap support) ----
 
     function setupTooltips() {
@@ -515,6 +656,38 @@
         xhr.onload = function () {
             if (xhr.status !== 200) return;
             applyConfig(JSON.parse(xhr.responseText));
+        };
+        xhr.send();
+    }
+
+    // ---- Satellite packet log helpers ----
+
+    function pruneSatPackets() {
+        var cutoff = Date.now() - SAT_LOG_MS;
+        while (satPackets.length > 0) {
+            var t = new Date(satPackets[satPackets.length - 1].receivetime).getTime();
+            if (t < cutoff) {
+                satPackets.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    function fetchSatellitePackets() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/api/satellite-packets", true);
+        xhr.onload = function () {
+            if (xhr.status !== 200) return;
+            try {
+                satPackets = JSON.parse(xhr.responseText) || [];
+            } catch (e) {
+                satPackets = [];
+            }
+            pruneSatPackets();
+            if (activeTab === "satellites") {
+                renderStations();
+            }
         };
         xhr.send();
     }
@@ -1118,6 +1291,13 @@
             onMessage();
             var data = JSON.parse(e.data);
             addPacketRow("rf", data);
+            if (data.is_satellite) {
+                satPackets.unshift(data);
+                pruneSatPackets();
+                if (activeTab === "satellites") {
+                    renderStations();
+                }
+            }
             setStatus(rtpStatus, "connected");
         });
 
@@ -1166,5 +1346,6 @@
     setupThemeToggle();
     setupTabs();
     fetchConfig();
+    fetchSatellitePackets();
     connectSSE();
 })();

@@ -65,3 +65,11 @@ threshold = 600
 [rtp]
 host = "ax25.local"
 port = 5004
+
+
+###########################################
+# The [satellite] section lists frequencies (MHz) considered satellite downlinks.
+# Packets on these frequencies are gated only when digipeated or from a known satellite.
+###########################################
+[satellite]
+frequencies = [145.825]

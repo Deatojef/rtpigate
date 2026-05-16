@@ -114,6 +114,7 @@ pub struct Config {
     pub location: Location,
     pub aprsis: AprsisConfig,
     pub rtp: RtpConfig,
+    pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
 }
 
@@ -158,6 +159,11 @@ pub struct RtpConfig {
     pub port: u32,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SatelliteConfig {
+    pub frequencies: Option<Vec<f64>>,
+}
+
 /// Sanitized APRS-IS config for the frontend (passcode omitted)
 #[derive(Serialize, Debug, Clone)]
 pub struct AprsisConfigPublic {
@@ -178,6 +184,7 @@ pub struct PublicConfig {
     pub location: Location,
     pub aprsis: AprsisConfigPublic,
     pub rtp: RtpConfig,
+    pub satellite_frequencies: Vec<f64>,
     pub started_at: Option<DateTime<Local>>,
 }
 
@@ -197,8 +204,18 @@ impl Config {
                 threshold: self.aprsis.threshold,
             },
             rtp: self.rtp.clone(),
+            satellite_frequencies: self.satellite_frequencies(),
             started_at: None,
         }
+    }
+
+    /// Returns the configured satellite frequencies, or a default of [145.825]
+    /// if the [satellite] section is missing.
+    pub fn satellite_frequencies(&self) -> Vec<f64> {
+        self.satellite
+            .as_ref()
+            .and_then(|s| s.frequencies.clone())
+            .unwrap_or_else(|| vec![145.825])
     }
 }
 
