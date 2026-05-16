@@ -133,7 +133,7 @@
 
         if (activeTab === "top-talkers") {
             stations.sort(function (a, b) { return b.count - a.count; });
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Count"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Direct Count", "Indirect Count"];
         } else if (activeTab === "most-distant") {
             stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
             if (stationLat !== null && stationLon !== null) {
@@ -314,10 +314,13 @@
                 }
                 tr.appendChild(tdCoords2);
 
-                // Count
-                var tdCount = document.createElement("td");
-                tdCount.textContent = s.count.toLocaleString();
-                tr.appendChild(tdCount);
+                // Direct Count / Indirect Count
+                var tdDirect = document.createElement("td");
+                tdDirect.textContent = s.count_direct.toLocaleString();
+                tr.appendChild(tdDirect);
+                var tdIndirect = document.createElement("td");
+                tdIndirect.textContent = s.count_digipeated.toLocaleString();
+                tr.appendChild(tdIndirect);
             }
 
             heardBody.appendChild(tr);

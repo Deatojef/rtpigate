@@ -216,7 +216,7 @@ pub async fn rtp_listener(
 
     // station tracking (never cleared)
     let mut station_map: HashMap<String, StationEntry> = HashMap::new();
-    let mut freq_counts: HashMap<String, u64> = HashMap::new();
+    let mut freq_counts: HashMap<String, (u64, DateTime<Local>)> = HashMap::new();
 
     // data series
     let mut packets_series = DataSeries {
@@ -342,16 +342,16 @@ pub async fn rtp_listener(
                             }
                         }
                     }
-                    freq_counts.retain(|freq, _| {
-                        station_map.values().any(|e| format!("{:.3}", e.frequency) == *freq)
-                    });
+                    // Prune frequencies not heard in the last 24 hours
+                    let freq_threshold = chrono::Duration::hours(24);
+                    freq_counts.retain(|_, (_, last_heard)| now - *last_heard < freq_threshold);
 
                     // Emit station statistics
                     let mut stations: Vec<StationEntry> = station_map.values().cloned().collect();
                     stations.sort_by(|a, b| b.count.cmp(&a.count));
 
                     let mut frequencies: Vec<FrequencyCount> = freq_counts.iter()
-                        .map(|(f, c)| FrequencyCount { frequency: f.clone(), count: *c })
+                        .map(|(f, (c, _))| FrequencyCount { frequency: f.clone(), count: *c })
                         .collect();
                     frequencies.sort_by(|a, b| b.count.cmp(&a.count));
 
@@ -405,7 +405,9 @@ pub async fn rtp_listener(
 
                                             // update station tracking
                                             let freq_key = format!("{:.3}", p.frequency);
-                                            *freq_counts.entry(freq_key).or_insert(0) += 1;
+                                            let freq_entry = freq_counts.entry(freq_key).or_insert((0, p.receivetime));
+                                            freq_entry.0 += 1;
+                                            freq_entry.1 = p.receivetime;
 
                                             // extract symbol table/code from info field
                                             let (sym_table, sym_code) = extract_symbol_chars(&p.info, &p.destination);
@@ -430,6 +432,8 @@ pub async fn rtp_listener(
                                                 symbol_table: None,
                                                 symbol_code: None,
                                                 count: 0,
+                                                count_direct: 0,
+                                                count_digipeated: 0,
                                             });
                                             entry.last_heard = p.receivetime;
                                             entry.frequency = p.frequency;
@@ -438,6 +442,11 @@ pub async fn rtp_listener(
                                                 entry.transmitted_by = Some(tb.clone());
                                             }
                                             entry.count += 1;
+                                            if p.heard_direct {
+                                                entry.count_direct += 1;
+                                            } else {
+                                                entry.count_digipeated += 1;
+                                            }
                                             if p.latitude.is_some() && p.longitude.is_some() {
                                                 entry.latitude = p.latitude;
                                                 entry.longitude = p.longitude;

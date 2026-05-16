@@ -93,6 +93,8 @@ pub struct StationEntry {
     pub symbol_table: Option<char>,
     pub symbol_code: Option<char>,
     pub count: u64,
+    pub count_direct: u64,
+    pub count_digipeated: u64,
 }
 
 #[derive(Serialize, Debug, Clone)]
