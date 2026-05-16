@@ -1,4 +1,5 @@
 use chrono::Local;
+use std::time::Instant;
 
 // We need to reference the crate's public items
 use rtpigate::config::*;
@@ -10,17 +11,22 @@ use rtpigate::ka9q::RTPPacket;
 fn make_packet() -> RTPPacket {
     RTPPacket {
         receivetime: Local::now(),
+        received_instant: Instant::now(),
         raw: String::from("N0CALL>APRS,WIDE1-1:!4903.50N/07201.75W-"),
         info: String::from("!4903.50N/07201.75W-"),
         path: String::from("WIDE1-1"),
+        digipeater_path: vec![],
+        hops: 0,
         ptype: '!',
         source: String::from("N0CALL"),
         destination: String::from("APRS"),
         heard_direct: true,
+        was_digipeated: false,
         heardfrom: String::from("N0CALL"),
         rfonly: false,
         frequency: 144.390,
         is_satellite: false,
+        object_name: None,
         latitude: Some(49.0583),
         longitude: Some(-72.0292),
         altitude_ft: None,
@@ -49,7 +55,6 @@ fn make_config(callsign: &str, passcode: &str) -> Config {
             igating: Some(true),
             symbol: Some("\\&".to_string()),
             overlay: Some("R".to_string()),
-            customfilter: None,
             threshold: Some(600),
         },
         rtp: RtpConfig {
@@ -235,14 +240,14 @@ fn test_empty_rtp_host_fails() {
 #[test]
 fn test_normal_packet_not_dropped() {
     let p = make_packet();
-    assert!(!droppacket(&p));
+    assert!(droppacket(&p).is_none());
 }
 
 #[test]
 fn test_rfonly_packet_dropped() {
     let mut p = make_packet();
     p.rfonly = true;
-    assert!(droppacket(&p));
+    assert_eq!(droppacket(&p), Some(DropReason::RfOnly));
 }
 
 #[test]
@@ -250,7 +255,7 @@ fn test_query_packet_dropped() {
     let mut p = make_packet();
     p.ptype = '?';
     p.info = String::from("?APRS?");
-    assert!(droppacket(&p));
+    assert_eq!(droppacket(&p), Some(DropReason::GenericQuery));
 }
 
 #[test]
@@ -258,7 +263,7 @@ fn test_third_party_with_tcpip_dropped() {
     let mut p = make_packet();
     p.ptype = '}';
     p.info = String::from("}N0CALL>APRS,TCPIP*:!4903.50N/07201.75W-");
-    assert!(droppacket(&p));
+    assert_eq!(droppacket(&p), Some(DropReason::ThirdPartyInternet));
 }
 
 #[test]
@@ -266,7 +271,16 @@ fn test_third_party_with_tcpxx_dropped() {
     let mut p = make_packet();
     p.ptype = '}';
     p.info = String::from("}N0CALL>APRS,TCPXX*:!4903.50N/07201.75W-");
-    assert!(droppacket(&p));
+    assert_eq!(droppacket(&p), Some(DropReason::ThirdPartyInternet));
+}
+
+#[test]
+fn test_third_party_with_lowercase_tcpip_dropped() {
+    // M3: marker substring matches must be case-insensitive
+    let mut p = make_packet();
+    p.ptype = '}';
+    p.info = String::from("}N0CALL>APRS,tcpip*:!4903.50N/07201.75W-");
+    assert_eq!(droppacket(&p), Some(DropReason::ThirdPartyInternet));
 }
 
 #[test]
@@ -274,7 +288,7 @@ fn test_third_party_without_internet_markers_not_dropped() {
     let mut p = make_packet();
     p.ptype = '}';
     p.info = String::from("}N0CALL>APRS,WIDE1-1:!4903.50N/07201.75W-");
-    assert!(!droppacket(&p));
+    assert!(droppacket(&p).is_none());
 }
 
 #[test]
@@ -283,7 +297,7 @@ fn test_satellite_direct_non_sat_callsign_dropped() {
     p.frequency = 145.825;
     p.heard_direct = true;
     p.source = String::from("N0CALL");
-    assert!(droppacket(&p));
+    assert_eq!(droppacket(&p), Some(DropReason::SatelliteDirect));
 }
 
 #[test]
@@ -292,7 +306,17 @@ fn test_satellite_direct_known_sat_not_dropped() {
     p.frequency = 145.825;
     p.heard_direct = true;
     p.source = String::from("RS0ISS");
-    assert!(!droppacket(&p));
+    assert!(droppacket(&p).is_none());
+}
+
+#[test]
+fn test_satellite_direct_known_sat_lowercase_not_dropped() {
+    // M3: callsign matching must be case-insensitive
+    let mut p = make_packet();
+    p.frequency = 145.825;
+    p.heard_direct = true;
+    p.source = String::from("rs0iss");
+    assert!(droppacket(&p).is_none());
 }
 
 #[test]
@@ -300,23 +324,41 @@ fn test_satellite_digipeated_not_dropped() {
     let mut p = make_packet();
     p.frequency = 145.825;
     p.heard_direct = false;
+    p.was_digipeated = true;
     p.source = String::from("N0CALL");
-    assert!(!droppacket(&p));
+    assert!(droppacket(&p).is_none());
+}
+
+#[test]
+fn test_satellite_wide_fillin_digipeated_not_dropped() {
+    // L2 edge case: a sat-frequency packet whose only repeated path entry is a
+    // WIDE-class fill-in. `heard_direct` reports true (because WIDE is in
+    // EXCLUDED_ADDRS), but the strict `was_digipeated` flag is true — so the
+    // sat filter must NOT drop it. Tests that the filter uses the strict flag,
+    // not the convention-laden `heard_direct`.
+    let mut p = make_packet();
+    p.frequency = 145.825;
+    p.heard_direct = true;        // artifact of EXCLUDED_ADDRS scrub
+    p.was_digipeated = true;      // strict: a `*` is genuinely present in path
+    p.source = String::from("N0CALL");  // not a known satellite
+    assert!(droppacket(&p).is_none(), "WIDE-fill-in-digipeated sat packet must be gated");
 }
 
 #[test]
 fn test_stale_packet_dropped() {
     let mut p = make_packet();
-    // Set receive time to 60 seconds ago
-    p.receivetime = Local::now() - chrono::Duration::seconds(60);
-    assert!(droppacket(&p));
+    // Push the monotonic instant 60 s into the past — the staleness check uses
+    // `received_instant` (M1), not the wall-clock `receivetime`.
+    p.received_instant = Instant::now()
+        .checked_sub(std::time::Duration::from_secs(60))
+        .expect("system clock too close to boot for this test");
+    assert_eq!(droppacket(&p), Some(DropReason::Stale));
 }
 
 #[test]
 fn test_fresh_packet_not_dropped() {
-    let mut p = make_packet();
-    p.receivetime = Local::now() - chrono::Duration::seconds(5);
-    assert!(!droppacket(&p));
+    let p = make_packet();
+    assert!(droppacket(&p).is_none());
 }
 
 
@@ -465,4 +507,15 @@ fn test_for_rxigate_format() {
     let result = p.for_rxigate("MYCALL");
     assert!(result.starts_with("N0CALL>APRS,WIDE1-1,qAO,MYCALL:"));
     assert!(result.contains("!4903.50N/07201.75W-"));
+}
+
+#[test]
+fn test_for_rxigate_empty_path_no_double_comma() {
+    // H1: direct-heard packets have an empty viapath. The output must not
+    // contain a double comma — APRS-IS parsers treat that inconsistently.
+    let mut p = make_packet();
+    p.path = String::new();
+    let result = p.for_rxigate("MYCALL");
+    assert!(!result.contains(",,"), "double comma in {result}");
+    assert!(result.starts_with("N0CALL>APRS,qAO,MYCALL:"));
 }

@@ -1,6 +1,6 @@
 use tokio::{net::UdpSocket, sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt};
+use std::{collections::{HashMap, VecDeque}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt, time::Instant};
 use rtp_rs::RtpReader;
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -20,6 +20,12 @@ pub struct RTPPacket {
     // when we initial received this packet over the network
     pub receivetime: DateTime<Local>,
 
+    // monotonic clock reading at the same moment as `receivetime`. Used for
+    // the staleness/age check so NTP corrections cannot spuriously age packets
+    // out of the gating pipeline. Not serialised to SSE clients.
+    #[serde(skip)]
+    pub received_instant: Instant,
+
     // the packet itself 
     pub raw: String,
     pub info: String,
@@ -38,9 +44,20 @@ pub struct RTPPacket {
     pub source: String,
     pub destination: String,
 
-    // was this packet heard directly or from a digipeater
+    // was this packet heard directly or from a digipeater.
+    //
+    // `heard_direct` follows the conventional "ignore fill-in digis" semantics:
+    // a path of only WIDE1-1* still reports as direct. This matches how most
+    // APRS UIs label packets, but it is *not* a strict "no asterisks anywhere"
+    // check — for that, use `was_digipeated`.
     pub heard_direct: bool,
     pub heardfrom: String,
+
+    // strict "any digipeater touched this packet" flag — true iff *any* address
+    // in the path has its has-been-repeated bit set, including WIDE-class fill-ins.
+    // Used by the satellite igate filter so a packet relayed by an unnamed
+    // fill-in digi is correctly recognised as having been digipeated.
+    pub was_digipeated: bool,
 
     // is this packet not to be igated and sent to the APRS-IS cloud?
     pub rfonly: bool,
@@ -77,14 +94,14 @@ impl fmt::Display for RTPPacket {
 
 impl RTPPacket {
     pub fn for_rxigate(&self, callsign: &str) -> String {
-        format!(
-            "{}>{},{},qAO,{}:{}",
-            self.source,
-            self.destination,
-            self.path,
-            callsign,
-            self.info
-        )
+        // Direct-heard packets have an empty viapath. Including the empty path
+        // would produce a double comma (SRC>DST,,qAO,...), which APRS-IS parsers
+        // treat inconsistently, so omit the path element entirely in that case.
+        if self.path.is_empty() {
+            format!("{}>{},qAO,{}:{}", self.source, self.destination, callsign, self.info)
+        } else {
+            format!("{}>{},{},qAO,{}:{}", self.source, self.destination, self.path, callsign, self.info)
+        }
     }
 }
 
@@ -118,6 +135,29 @@ fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, Rtp
     let std_socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
     std_socket.set_reuse_address(true)?;
+
+    // Request a generous UDP receive buffer to absorb scheduler delays and bursts.
+    // Linux silently caps this to net.core.rmem_max — log the actual size so the
+    // operator can raise the sysctl if needed.
+    const REQUESTED_RCVBUF: usize = 8 * 1024 * 1024;
+    if let Err(e) = std_socket.set_recv_buffer_size(REQUESTED_RCVBUF) {
+        warn!("Unable to set UDP recv buffer to {} bytes: {}", REQUESTED_RCVBUF, e);
+    }
+    match std_socket.recv_buffer_size() {
+        Ok(actual) => {
+            if actual < REQUESTED_RCVBUF {
+                warn!(
+                    "UDP recv buffer is {} bytes (requested {}). \
+                     Increase net.core.rmem_max to reduce kernel-level packet drops.",
+                    actual, REQUESTED_RCVBUF
+                );
+            } else {
+                info!("UDP recv buffer: {} bytes", actual);
+            }
+        },
+        Err(e) => warn!("Unable to read UDP recv buffer size: {}", e),
+    }
+
     std_socket.bind(&multicast_addr.into())?;
     std_socket.set_nonblocking(true)?;
 
@@ -443,8 +483,10 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
     match Ax25Frame::from_bytes(rtp.payload()) {
         Ok(ax25_frame) => {
 
-            // the time this packet was received.
+            // the time this packet was received. Capture both the wall-clock
+            // (for display/SSE) and a monotonic Instant (for age checks).
             let receivetime = Local::now();
+            let received_instant = Instant::now();
 
             // the frequency this packet was heard over
             let frequency = rtp.ssrc() as f64 / 1000.0;
@@ -487,6 +529,10 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
             // did this station hear this packet directly or was it digipeated?
             let heard_direct: bool = !route_strings.iter()
                 .any(|(s, repeated)| *repeated && EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)));
+
+            // strict variant: any address at all that has been repeated, including WIDE.
+            // Used by the satellite igate filter — see igate::droppacket.
+            let was_digipeated: bool = route_strings.iter().any(|(_, repeated)| *repeated);
 
             let heardfrom: String = if heard_direct {
                 source.clone()
@@ -590,6 +636,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
             // return a new Packet structure
             Ok(RTPPacket {
                 receivetime,
+                received_instant,
                 is_satellite: SAT_FREQS.contains(&frequency),
                 frequency,
                 path: viapath,
@@ -597,6 +644,7 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 hops,
                 heardfrom,
                 heard_direct,
+                was_digipeated,
                 rfonly,
                 ptype,
                 source,

@@ -1,4 +1,5 @@
-use chrono::{Local, Utc, Timelike};
+use chrono::{Utc, Timelike};
+use std::time::Duration;
 use tokio::{fs, io::AsyncWriteExt};
 
 use log::debug;
@@ -13,55 +14,76 @@ pub static TOCALL: &str = "APZJD1";
 
 // ---- Packet filtering ----
 
+/// Reason a packet was filtered out of the igating pipeline. Surfaced in logs
+/// and broken out into per-reason counters so silent gating regressions show up
+/// in `aprsis_statistics`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropReason {
+    Stale,
+    RfOnly,
+    GenericQuery,
+    ThirdPartyInternet,
+    SatelliteDirect,
+}
+
+impl DropReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DropReason::Stale => "stale",
+            DropReason::RfOnly => "rfonly",
+            DropReason::GenericQuery => "query",
+            DropReason::ThirdPartyInternet => "thirdparty_inet",
+            DropReason::SatelliteDirect => "sat_direct",
+        }
+    }
+}
+
 /// Determine if a packet should be dropped (i.e. not igated).
-/// Returns true if the packet should be dropped, false if it should be gated.
-pub fn droppacket(p: &RTPPacket) -> bool {
-    // the age threshold in seconds.  Packets older than this are dropped.
-    let age_threshold = 30;
-
-    // get the current timestamp
-    let current_time = Local::now().timestamp();
-
-    // get the packet's receive time
-    let packet_time = p.receivetime.timestamp();
-
-    // compare the two times, if > 30s then the packet should be dropped as too much time has
-    // elapsed since its reception
-    if current_time - packet_time > age_threshold {
-        return true;
+/// Returns `Some(reason)` if the packet should be dropped, `None` if it should be gated.
+pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
+    // Stale-packet guard. Uses the monotonic Instant captured at parse time so
+    // NTP corrections (or wall-clock skew) cannot spuriously age out packets.
+    const AGE_THRESHOLD: Duration = Duration::from_secs(30);
+    if p.received_instant.elapsed() > AGE_THRESHOLD {
+        return Some(DropReason::Stale);
     }
 
     // if this is an "RF Only" packet, don't igate it.
     if p.rfonly {
-        return true;
+        return Some(DropReason::RfOnly);
     }
 
     // drop generic query packets
     if p.ptype == '?' {
-        return true;
+        return Some(DropReason::GenericQuery);
     }
 
-    // drop third-party packets that contain internet markers in their inner header
+    // drop third-party packets that contain internet markers in their inner header.
+    // Match case-insensitively — uppercase is convention but malformed third-party
+    // headers in the wild can be mixed case.
     if p.ptype == '}' {
-        let inner = &p.info[1..]; // skip the '}' data type char
+        let inner = p.info.get(1..).unwrap_or("").to_ascii_uppercase();
         if inner.contains("TCPIP") || inner.contains("TCPXX") {
-            return true;
+            return Some(DropReason::ThirdPartyInternet);
         }
     }
 
-    // This check is more involved that the simple is_satellite field within the RTPPacket struct,
-    // as we neeed to determine if this satellite packet was digipeated or not - we don't igate
-    // satellite packets heard directly unless they were from the satellites themselves.
+    // Satellite-frequency policy: gate iff the packet was digipeated by *anything*
+    // (including unnamed fill-ins like WIDE1-1*) OR the source is a known satellite.
+    // This uses `was_digipeated` rather than `heard_direct` because the latter
+    // intentionally ignores WIDE-class digipeaters, which would let a fill-in-relayed
+    // packet incorrectly fall into the "direct" branch.
     const SAT_FREQS: &[f64] = &[145.825];
-    const KNOWN_SATS: &[&str] = &["RS0ISS", "DP0SNX", "A55BTN"];
-    if p.heard_direct && SAT_FREQS.contains(&p.frequency) && !KNOWN_SATS.contains(&p.source.as_str()) {
-        true
+    const KNOWN_SATS: &[&str] = &["RS0ISS", "NA1SS", "DP0ISS", "OR4ISS", "IR0ISS", "DP0SNX"];
+    if !p.was_digipeated
+        && SAT_FREQS.contains(&p.frequency)
+        && !KNOWN_SATS.iter().any(|s| s.eq_ignore_ascii_case(&p.source))
+    {
+        return Some(DropReason::SatelliteDirect);
     }
 
     // for everything else we igate it.
-    else {
-        false
-    }
+    None
 }
 
 

@@ -1,10 +1,17 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, Duration}};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, timeout, Duration}};
 use tokio_util::sync::CancellationToken;
 use std::{collections::{HashMap, VecDeque}, sync::Arc};
 use chrono::{Local, Utc};
+use socket2::{SockRef, TcpKeepalive};
 
 use log::{info, warn, debug};
 use tokio::time::sleep;
+
+// Connection-level timeouts. APRS-IS servers send `#` keepalive comments every ~20s,
+// so writes/login should complete well within these bounds on a healthy link.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem};
 use crate::error::RtpigateError;
@@ -36,6 +43,19 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut lifetime_rf_received: u64 = 0;
     let mut lifetime_packets_igated: u64 = 0;
     let mut lifetime_packets_dropped: u64 = 0;
+
+    // per-reason drop breakdown (lifetime). Each filter rule increments exactly
+    // one of these; their sum (plus duplicates) equals lifetime_packets_dropped.
+    let mut lifetime_drops_stale: u64 = 0;
+    let mut lifetime_drops_rfonly: u64 = 0;
+    let mut lifetime_drops_query: u64 = 0;
+    let mut lifetime_drops_thirdparty: u64 = 0;
+    let mut lifetime_drops_sat: u64 = 0;
+    let mut lifetime_drops_duplicate: u64 = 0;
+
+    // packets that were dropped by the broadcast channel before reaching gating
+    // (RecvError::Lagged). These never had a chance to be evaluated.
+    let mut lifetime_lagged_drops: u64 = 0;
 
     // data series
     let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: VecDeque::new() };
@@ -177,10 +197,10 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
             },
         };
 
-        // create a TCP stream
-        let socket: TcpStream = match TcpStream::connect(sock_addr).await {
-            Ok(s) => s,
-            Err(e) => {
+        // create a TCP stream (with bounded connect timeout)
+        let socket: TcpStream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(sock_addr)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 warn!("Failed to connect to {}:{}: {}. Retrying in {}s...", host, port, e, backoff_secs);
                 tokio::select! {
                     _ = token.cancelled() => break,
@@ -189,7 +209,28 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
             },
+            Err(_elapsed) => {
+                warn!("Connect to {}:{} timed out after {}s. Retrying in {}s...", host, port, CONNECT_TIMEOUT.as_secs(), backoff_secs);
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = sleep(Duration::from_secs(backoff_secs)) => {},
+                }
+                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                continue;
+            },
         };
+
+        // Enable TCP keepalive so a half-open connection (silent network drop, NAT
+        // idle, hung server) is detected at the OS level rather than blocking writes
+        // forever.
+        {
+            let ka = TcpKeepalive::new()
+                .with_time(Duration::from_secs(60))
+                .with_interval(Duration::from_secs(20));
+            if let Err(e) = SockRef::from(&socket).set_tcp_keepalive(&ka) {
+                warn!("Failed to set TCP keepalive on APRS-IS socket: {}", e);
+            }
+        }
 
         // reset backoff on successful connection
         backoff_secs = 5;
@@ -217,9 +258,9 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                 break;
             },
 
-            result = login_to_aprsis(&mut write_half, &mut read_stream, &loginstring, &host, &port, rw) => {
+            result = timeout(LOGIN_TIMEOUT, login_to_aprsis(&mut write_half, &mut read_stream, &loginstring, &host, &port, rw)) => {
                 match result {
-                    Ok(login) => {
+                    Ok(Ok(login)) => {
                         if login {
                             info!("Login to {}:{} successful", host, port);
                             login_ok = true;
@@ -229,8 +270,12 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                             login_ok = false;
                         }
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!("Error trying to log into {}:{}: {}. Retrying in {}s...", host, port, e, backoff_secs);
+                        login_ok = false;
+                    },
+                    Err(_elapsed) => {
+                        warn!("Login to {}:{} timed out after {}s. Retrying in {}s...", host, port, LOGIN_TIMEOUT.as_secs(), backoff_secs);
                         login_ok = false;
                     }
                 }
@@ -264,6 +309,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                     let the_time = Local::now();
 
+                    // Purge expired dedup entries on a steady cadence so the cache
+                    // doesn't accumulate stale rows during long idle stretches.
+                    let now_ts = the_time.timestamp();
+                    dedup_cache.retain(|_, ts| now_ts - *ts < DEDUP_TTL_SECS);
+
                     // add data points to series
                     rf_received_series.data.push_back(DataPoint { timestamp: the_time, value: stats_rf_received });
                     dropped_series.data.push_back(DataPoint { timestamp: the_time, value: packets_dropped });
@@ -292,6 +342,13 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         lifetime_packets_igated,
                         lifetime_packets_dropped,
                         lifetime_reconnects: total_reconnects as u64,
+                        lifetime_drops_stale,
+                        lifetime_drops_rfonly,
+                        lifetime_drops_query,
+                        lifetime_drops_thirdparty,
+                        lifetime_drops_sat,
+                        lifetime_drops_duplicate,
+                        lifetime_lagged_drops,
                     };
 
                     if let Err(e) = data_channel.send(DataItem::Tlm(AppTelemetry::AprsisStatus(data))) {
@@ -345,22 +402,26 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                     // if igating is enabled...
                                     if igating && rw {
 
-                                        if igate::droppacket(&p) {
-                                            warn!("dropping packet: {}MHz rfonly: {} Direct: {}  {}", p.frequency, p.rfonly as u32, p.heard_direct as u32, p.raw);
+                                        if let Some(reason) = igate::droppacket(&p) {
+                                            warn!("dropping packet ({}): {}MHz rfonly: {} Direct: {}  {}", reason.as_str(), p.frequency, p.rfonly as u32, p.heard_direct as u32, p.raw);
+
+                                            match reason {
+                                                igate::DropReason::Stale => lifetime_drops_stale += 1,
+                                                igate::DropReason::RfOnly => lifetime_drops_rfonly += 1,
+                                                igate::DropReason::GenericQuery => lifetime_drops_query += 1,
+                                                igate::DropReason::ThirdPartyInternet => lifetime_drops_thirdparty += 1,
+                                                igate::DropReason::SatelliteDirect => lifetime_drops_sat += 1,
+                                            }
 
                                             dropped += 1;
                                             packets_dropped += 1;
                                             lifetime_packets_dropped += 1;
                                         }
                                         else {
-                                            // duplicate suppression: check if we've recently igated this exact packet
+                                            // duplicate suppression: check if we've recently igated this exact packet.
+                                            // Expired entries are purged on the telemetry tick (every 15 s).
                                             let dedup_key = format!("{}:{}", p.source, p.info);
                                             let now_ts = Local::now().timestamp();
-
-                                            // purge expired entries periodically (when cache grows)
-                                            if dedup_cache.len() > 500 {
-                                                dedup_cache.retain(|_, ts| now_ts - *ts < DEDUP_TTL_SECS);
-                                            }
 
                                             if let Some(last_ts) = dedup_cache.get(&dedup_key) {
                                                 if now_ts - last_ts < DEDUP_TTL_SECS {
@@ -368,6 +429,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                     dropped += 1;
                                                     packets_dropped += 1;
                                                     lifetime_packets_dropped += 1;
+                                                    lifetime_drops_duplicate += 1;
                                                     continue;
                                                 }
                                             }
@@ -377,10 +439,19 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                                             info!("Igating:  {}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
-                                            // write data to the socket
-                                            if let Err(e) = write_half.write_all(format!("{}\r\n", packet_text).as_bytes()).await {
-                                                warn!("Write to APRS-IS failed: {}", e);
-                                                break;
+                                            // write data to the socket (bounded timeout — a hung
+                                            // server can otherwise block this task indefinitely while
+                                            // RF packets pile up and lag out of the broadcast channel)
+                                            match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", packet_text).as_bytes())).await {
+                                                Ok(Ok(())) => {},
+                                                Ok(Err(e)) => {
+                                                    warn!("Write to APRS-IS failed: {}", e);
+                                                    break;
+                                                },
+                                                Err(_elapsed) => {
+                                                    warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
+                                                    break;
+                                                },
                                             }
 
                                             // record this packet in the dedup cache
@@ -396,6 +467,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         },
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!("APRS-IS data channel lagged, skipped {} messages", n);
+                            lifetime_lagged_drops = lifetime_lagged_drops.saturating_add(n);
                         },
                         _ => (),
                     }
@@ -418,9 +490,16 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                         // transmit this position packet to the aprsis server.
                         info!("xmitting: {}", posit_text);
-                        if let Err(e) = write_half.write_all(format!("{}\r\n", posit_text).as_bytes()).await {
-                            warn!("Write to APRS-IS failed: {}", e);
-                            break;
+                        match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", posit_text).as_bytes())).await {
+                            Ok(Ok(())) => {},
+                            Ok(Err(e)) => {
+                                warn!("Write to APRS-IS failed: {}", e);
+                                break;
+                            },
+                            Err(_elapsed) => {
+                                warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
+                                break;
+                            },
                         }
 
 
@@ -471,10 +550,18 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                             let packet_text = format!("{}>{},TCPIP*:{}", callsign, TOCALL, info_string);
 
                             info!("xmitting: {}", packet_text);
-                            if let Err(e) = write_half.write_all(format!("{}\r\n", packet_text).as_bytes()).await {
-                                warn!("Write to APRS-IS failed: {}", e);
-                                write_failed = true;
-                                break;
+                            match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", packet_text).as_bytes())).await {
+                                Ok(Ok(())) => {},
+                                Ok(Err(e)) => {
+                                    warn!("Write to APRS-IS failed: {}", e);
+                                    write_failed = true;
+                                    break;
+                                },
+                                Err(_elapsed) => {
+                                    warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
+                                    write_failed = true;
+                                    break;
+                                },
                             }
                         }
                         if write_failed {

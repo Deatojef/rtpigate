@@ -47,6 +47,20 @@ pub struct AprsisTelemetry {
     pub lifetime_packets_igated: u64,
     pub lifetime_packets_dropped: u64,
     pub lifetime_reconnects: u64,
+
+    // Per-reason drop breakdown — all counted toward `lifetime_packets_dropped`
+    // as well, but exposed individually so silent gating regressions are visible.
+    pub lifetime_drops_stale: u64,
+    pub lifetime_drops_rfonly: u64,
+    pub lifetime_drops_query: u64,
+    pub lifetime_drops_thirdparty: u64,
+    pub lifetime_drops_sat: u64,
+    pub lifetime_drops_duplicate: u64,
+
+    // Packets that were dropped by the broadcast channel (RecvError::Lagged)
+    // before reaching the gating logic. Distinct from `packets_dropped` because
+    // these never had a chance to be evaluated.
+    pub lifetime_lagged_drops: u64,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -135,7 +149,6 @@ pub struct AprsisConfig {
     pub igating: Option<bool>,
     pub symbol: Option<String>,
     pub overlay: Option<String>,
-    pub customfilter: Option<String>,
     pub threshold: Option<u64>,
 }
 
