@@ -24,6 +24,7 @@ pub enum DropReason {
     GenericQuery,
     ThirdPartyInternet,
     SatelliteDirect,
+    MalformedField,
 }
 
 impl DropReason {
@@ -34,6 +35,7 @@ impl DropReason {
             DropReason::GenericQuery => "query",
             DropReason::ThirdPartyInternet => "thirdparty_inet",
             DropReason::SatelliteDirect => "sat_direct",
+            DropReason::MalformedField => "malformed",
         }
     }
 }
@@ -41,6 +43,21 @@ impl DropReason {
 /// Determine if a packet should be dropped (i.e. not igated).
 /// Returns `Some(reason)` if the packet should be dropped, `None` if it should be gated.
 pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
+    // Reject any field that contains an EMBEDDED CR or LF. APRS-IS is
+    // line-delimited, so an embedded \r or \n in source, destination, path,
+    // or info would be smuggled across our authenticated session as an
+    // additional protocol line (spoofed packets under our verified passcode).
+    // AX.25 imposes no such restriction, so this MUST be checked before
+    // gating. Trailing CR/LF is tolerated: some senders append it as a habit
+    // even though AX.25 doesn't require it, and a trailing terminator only
+    // produces a harmless empty line on the wire (not injection).
+    if [&p.source, &p.destination, &p.path, &p.info]
+        .iter()
+        .any(|f| f.trim_end_matches(['\r', '\n']).bytes().any(|b| b == b'\r' || b == b'\n'))
+    {
+        return Some(DropReason::MalformedField);
+    }
+
     // Stale-packet guard. Uses the monotonic Instant captured at parse time so
     // NTP corrections (or wall-clock skew) cannot spuriously age out packets.
     const AGE_THRESHOLD: Duration = Duration::from_secs(30);

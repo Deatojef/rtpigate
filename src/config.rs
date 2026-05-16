@@ -56,6 +56,7 @@ pub struct AprsisTelemetry {
     pub lifetime_drops_thirdparty: u64,
     pub lifetime_drops_sat: u64,
     pub lifetime_drops_duplicate: u64,
+    pub lifetime_drops_malformed: u64,
 
     // Packets that were dropped by the broadcast channel (RecvError::Lagged)
     // before reaching the gating logic. Distinct from `packets_dropped` because

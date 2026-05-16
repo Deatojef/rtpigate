@@ -52,6 +52,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut lifetime_drops_thirdparty: u64 = 0;
     let mut lifetime_drops_sat: u64 = 0;
     let mut lifetime_drops_duplicate: u64 = 0;
+    let mut lifetime_drops_malformed: u64 = 0;
 
     // packets that were dropped by the broadcast channel before reaching gating
     // (RecvError::Lagged). These never had a chance to be evaluated.
@@ -348,6 +349,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         lifetime_drops_thirdparty,
                         lifetime_drops_sat,
                         lifetime_drops_duplicate,
+                        lifetime_drops_malformed,
                         lifetime_lagged_drops,
                     };
 
@@ -411,6 +413,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                 igate::DropReason::GenericQuery => lifetime_drops_query += 1,
                                                 igate::DropReason::ThirdPartyInternet => lifetime_drops_thirdparty += 1,
                                                 igate::DropReason::SatelliteDirect => lifetime_drops_sat += 1,
+                                                igate::DropReason::MalformedField => lifetime_drops_malformed += 1,
                                             }
 
                                             dropped += 1;
@@ -436,6 +439,20 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                                             // reform packet into a string suitable for xmitting to an APRS-IS server
                                             let packet_text = p.for_rxigate(&callsign);
+
+                                            // Defense in depth — droppacket() already rejects fields
+                                            // containing embedded CR/LF, but enforce again at the write
+                                            // boundary so a future code path that bypasses gating cannot
+                                            // smuggle a forged APRS-IS line over our authenticated session.
+                                            // Trailing CR/LF is tolerated to match droppacket().
+                                            if packet_text.trim_end_matches(['\r', '\n']).bytes().any(|b| b == b'\r' || b == b'\n') {
+                                                warn!("Refusing to write packet with embedded CR/LF: {}", p.raw);
+                                                dropped += 1;
+                                                packets_dropped += 1;
+                                                lifetime_packets_dropped += 1;
+                                                lifetime_drops_malformed += 1;
+                                                continue;
+                                            }
 
                                             info!("Igating:  {}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
