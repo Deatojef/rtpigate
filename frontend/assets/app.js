@@ -1065,9 +1065,6 @@
     function addPacketRow(type, data) {
         var tr = document.createElement("tr");
         tr.className = type === "rf" ? "rf-packet" : "inet-packet";
-        if (type === "rf" && data.ssrc != null && data.rtp_seq != null) {
-            tr.setAttribute("data-pkt-id", data.ssrc + "-" + data.rtp_seq);
-        }
 
         // Time
         var tdTime = document.createElement("td");
@@ -1125,12 +1122,6 @@
             tdFreq.textContent = "inet";
         }
         tr.appendChild(tdFreq);
-
-        // SNR (populated asynchronously by the "snr_update" SSE event keyed by ssrc-seq)
-        var tdSnr = document.createElement("td");
-        tdSnr.className = "pkt-snr";
-        tdSnr.textContent = "--";
-        tr.appendChild(tdSnr);
 
         // Heard Direct
         var tdDirect = document.createElement("td");
@@ -1311,19 +1302,6 @@
                 }
             }
             setStatus(rtpStatus, "connected");
-        });
-
-        es.addEventListener("snr_update", function (e) {
-            onMessage();
-            var data = JSON.parse(e.data);
-            var pktId = data.ssrc + "-" + data.rtp_seq;
-            var row = packetBody.querySelector('tr[data-pkt-id="' + pktId + '"]');
-            if (!row) return;
-            var cell = row.querySelector(".pkt-snr");
-            if (!cell) return;
-            cell.textContent = data.avg.toFixed(1) + " dB";
-            cell.title = "min " + data.min.toFixed(1) + " dB, max " + data.max.toFixed(1) +
-                         " dB (" + data.samples + " sample" + (data.samples === 1 ? "" : "s") + ")";
         });
 
         es.addEventListener("packet_statistics", function (e) {

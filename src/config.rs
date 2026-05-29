@@ -10,19 +10,6 @@ use crate::ka9q::Packet;
 pub enum DataItem {
     Pkt(Packet),
     Tlm(AppTelemetry),
-    SnrUpdate(SnrUpdate),
-}
-
-/// Deferred SNR characterization for a previously broadcast RTP packet,
-/// keyed by (ssrc, rtp_seq) so the frontend can find the rendered row.
-#[derive(Serialize, Debug, Clone)]
-pub struct SnrUpdate {
-    pub ssrc: u32,
-    pub rtp_seq: u16,
-    pub min: f64,
-    pub avg: f64,
-    pub max: f64,
-    pub samples: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +119,6 @@ pub struct Config {
     pub rtp: RtpConfig,
     pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
-    pub status: Option<StatusConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -172,12 +158,6 @@ pub struct AprsisConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct RtpConfig {
-    pub host: String,
-    pub port: u32,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct StatusConfig {
     pub host: String,
     pub port: u32,
 }

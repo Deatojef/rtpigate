@@ -68,16 +68,6 @@ port = 5004
 
 
 ###########################################
-# The [status] section (optional) subscribes to radiod's TLV status multicast to get per-channel
-# signal metrics (currently FM_SNR). When set, rtpigate stamps each RF packet with the most recent
-# SNR reading for its channel. Omit this section to disable.
-###########################################
-[status]
-host = "ax25-status.local"
-port = 5006
-
-
-###########################################
 # The [satellite] section lists frequencies (MHz) considered satellite downlinks.
 # Packets on these frequencies are gated only when digipeated or from a known satellite.
 ###########################################
