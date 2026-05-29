@@ -45,6 +45,14 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                         }
                     },
 
+                    Ok(DataItem::SnrUpdate(update)) => {
+                        let key = String::from("snr_update");
+                        let thejson = json!(update);
+                        if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                            debug!("No SSE subscribers connected");
+                        }
+                    },
+
                     Ok(DataItem::Tlm(telemetry)) => {
                         match telemetry {
                             AppTelemetry::PacketStatus(telem) => {

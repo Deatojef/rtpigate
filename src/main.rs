@@ -34,6 +34,9 @@ mod igate;
 mod sse;
 use sse::{sse_task, SSEEvent};
 
+mod status;
+use status::{new_snr_map, status_listener};
+
 
 // for the axum application state
 #[derive(Clone)]
@@ -165,15 +168,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>> = Arc::new(RwLock::new(VecDeque::new()));
 
     //#################
+    // Shared FM_SNR map (SSRC -> dB), populated by the status_listener task and
+    // read by rtp_listener when stamping each packet. Empty (so all packets get
+    // fm_snr_db=None) when the [status] section is absent.
+    //#################
+    let snr_map = new_snr_map();
+
+    //#################
+    // status_listener task — subscribes to radiod's TLV status multicast.
+    //#################
+    if let Some(ref status_cfg) = shared_config.status {
+        let status_cfg = status_cfg.clone();
+        let status_token = cancel_token.clone();
+        let status_snr_map = Arc::clone(&snr_map);
+
+        task_set.spawn(async move {
+            if let Err(e) = status_listener(status_cfg, status_snr_map, status_token).await {
+                error!("Unable to create status listener task: {}", e);
+            }
+        });
+
+        expected_tasks += 1;
+    }
+
+    //#################
     // rtp_listener task
     //#################
     let rtp_tx_sender = data_tx.clone();
     let rtp_config = Arc::clone(&shared_config);
     let rtp_token = cancel_token.clone();
     let rtp_sat_log = Arc::clone(&sat_packet_log);
+    let rtp_snr_map = Arc::clone(&snr_map);
 
     task_set.spawn(async move {
-        if let Err(e) = rtp_listener(rtp_tx_sender, rtp_token, rtp_config, rtp_sat_log).await {
+        if let Err(e) = rtp_listener(rtp_tx_sender, rtp_token, rtp_config, rtp_sat_log, rtp_snr_map).await {
             error!("Unable to create RTP listener task: {}", e);
         }
     });

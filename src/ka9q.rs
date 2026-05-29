@@ -13,6 +13,39 @@ use aprs_parser::{AprsPacket, AprsData};
 use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
 use crate::error::RtpigateError;
 
+/// One contiguous run of FM-SNR samples for a single channel, accumulated
+/// while the carrier was active. Boundaries are defined by gaps between
+/// consecutive status updates exceeding `CLUSTER_GAP` (see status.rs).
+#[derive(Debug, Clone)]
+pub struct SnrCluster {
+    pub min: f64,
+    pub max: f64,
+    pub sum: f64,
+    pub count: u32,
+    pub last_sample_at: Instant,
+}
+
+impl SnrCluster {
+    pub fn new(snr: f64, at: Instant) -> Self {
+        Self { min: snr, max: snr, sum: snr, count: 1, last_sample_at: at }
+    }
+    pub fn extend(&mut self, snr: f64, at: Instant) {
+        if snr < self.min { self.min = snr; }
+        if snr > self.max { self.max = snr; }
+        self.sum += snr;
+        self.count += 1;
+        self.last_sample_at = at;
+    }
+    pub fn avg(&self) -> f64 { self.sum / self.count as f64 }
+}
+
+/// Shared per-SSRC FIFO of carrier-active clusters. The status listener
+/// appends samples (extending the most recent cluster or starting a new one),
+/// and the RTP listener pops the oldest unmatched cluster to characterize
+/// each arriving packet — machine-independent because matching is structural,
+/// not timestamp-relative.
+pub type SnrMap = Arc<tokio::sync::RwLock<HashMap<u32, VecDeque<SnrCluster>>>>;
+
 // the packet structure (created by the RTP thread for incoming RTP packets)
 #[derive(Debug, Clone, Serialize)]
 pub struct RTPPacket {
@@ -65,6 +98,11 @@ pub struct RTPPacket {
     // the frequency from the RTP packet usually from ssrc()
     pub frequency: f64,
 
+    // raw RTP SSRC and per-stream sequence number — together identify this
+    // datagram so an async SNR update can find it on the frontend.
+    pub ssrc: u32,
+    pub rtp_seq: u16,
+
     // was this packet heard from or perhaps, destined to a satellite?
     pub is_satellite: bool,
 
@@ -80,6 +118,7 @@ pub struct RTPPacket {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub altitude_ft: Option<f64>,
+
 }
 
 impl fmt::Display for RTPPacket {
@@ -177,7 +216,7 @@ fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, Rtp
 
 
 // Sets up a UDP socket bound to the given multicast address
-fn setup_multicast_socket(address: &str) -> Result<UdpSocket, RtpigateError> {
+pub(crate) fn setup_multicast_socket(address: &str) -> Result<UdpSocket, RtpigateError> {
     let multicast_addr = get_multicast_socket_addr(address)?;
     let std_socket = bind_multicast(multicast_addr)?;
     let udp_socket = UdpSocket::from_std(std_socket)?;
@@ -192,6 +231,7 @@ pub async fn rtp_listener(
     token: CancellationToken,
     config: Arc<Config>,
     sat_packet_log: Arc<std::sync::RwLock<VecDeque<RTPPacket>>>,
+    snr_map: SnrMap,
 ) -> Result<(), RtpigateError> {
 
     info!("Started");
@@ -478,11 +518,38 @@ pub async fn rtp_listener(
                                                 }
                                             }
 
+                                            // Capture identifiers for the deferred SNR matcher before
+                                            // ownership of `p` moves into the broadcast.
+                                            let snr_ssrc = p.ssrc;
+                                            let snr_seq = p.rtp_seq;
+
                                             // attempt to send this packet to the channel so downstream
-                                            // consumers can process this packet.
+                                            // consumers can process this packet. SNR fields are None
+                                            // here on purpose — igating must not wait for SNR.
                                             if let Err(e) = data_channel.send(DataItem::Pkt(Packet::RTP(p))) {
                                                 warn!("Channel send failed: {}", e);
                                             }
+
+                                            // Deferred SNR matcher: wait briefly for the carrier's
+                                            // status cluster to close, pop it, and broadcast a
+                                            // separate SnrUpdate keyed by (ssrc, seq) that the
+                                            // frontend can use to patch the already-rendered row.
+                                            let snr_map_for_task = Arc::clone(&snr_map);
+                                            let snr_tx = data_channel.clone();
+                                            tokio::spawn(async move {
+                                                tokio::time::sleep(SNR_MATCH_DELAY).await;
+                                                if let Some(cluster) = pop_oldest_cluster(&snr_map_for_task, snr_ssrc).await {
+                                                    let update = crate::config::SnrUpdate {
+                                                        ssrc: snr_ssrc,
+                                                        rtp_seq: snr_seq,
+                                                        min: cluster.min,
+                                                        avg: cluster.avg(),
+                                                        max: cluster.max,
+                                                        samples: cluster.count,
+                                                    };
+                                                    let _ = snr_tx.send(DataItem::SnrUpdate(update));
+                                                }
+                                            });
                                         },
 
                                         Err(e) => {
@@ -535,7 +602,9 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
             let received_instant = Instant::now();
 
             // the frequency this packet was heard over
-            let frequency = rtp.ssrc() as f64 / 1000.0;
+            let ssrc = rtp.ssrc();
+            let rtp_seq: u16 = rtp.sequence_number().into();
+            let frequency = ssrc as f64 / 1000.0;
 
             // get the ax25 frame from the rtp packet's payload
             let ax25infofield = match ax25_frame.content {
@@ -687,6 +756,8 @@ fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
                 is_satellite: false,
                 igated: false,
                 frequency,
+                ssrc,
+                rtp_seq,
                 path: viapath,
                 digipeater_path,
                 hops,
@@ -799,5 +870,28 @@ fn extract_symbol_chars(info: &str, _destination: &str) -> (Option<char>, Option
         _ => {},
     }
     (None, None)
+}
+
+/// Delay before the deferred SNR matcher pops a cluster. Sized to cover the
+/// observed packetd-to-rtpigate latency PLUS `CLUSTER_GAP`, so even a status
+/// sample arriving 700+ ms after the RTP datagram has time to land and the
+/// cluster has time to close. Tunable via empirical testing.
+pub const SNR_MATCH_DELAY: Duration = Duration::from_millis(1500);
+
+/// Pop the oldest closed cluster for `ssrc`. With FIFO ordering (front=oldest,
+/// back=newest), any non-last cluster is guaranteed closed because a newer
+/// one already started. If there's exactly one cluster, only pop it once the
+/// last sample is older than `CLUSTER_GAP` (i.e. the cluster has settled).
+pub async fn pop_oldest_cluster(snr_map: &SnrMap, ssrc: u32) -> Option<SnrCluster> {
+    let mut map = snr_map.write().await;
+    let deque = map.get_mut(&ssrc)?;
+    let len = deque.len();
+    let now = Instant::now();
+    let can_pop = match deque.front() {
+        None => false,
+        Some(_) if len > 1 => true,
+        Some(front) => now.duration_since(front.last_sample_at) >= crate::status::CLUSTER_GAP,
+    };
+    if can_pop { deque.pop_front() } else { None }
 }
 
