@@ -1,16 +1,21 @@
 # rtpigate
 
-An APRS receive-only iGate for [KA9Q-Radio](http://www.ka9q.net/radio/) backend, written in Rust. Receives AX.25 frames via RTP multicast, filters them per APRS-IS igating rules, and forwards qualifying packets to the APRS-IS internet network. Includes a real-time web dashboard for monitoring station activity.
+An APRS receive-only iGate for [KA9Q-Radio](http://www.ka9q.net/radio/) backend, written in Rust. It subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, demodulates the 1200-baud AFSK in-process, decodes the AX.25/APRS frames, filters them per APRS-IS igating rules, and forwards qualifying packets to the APRS-IS internet network. Includes a real-time web dashboard for monitoring station activity, including a slicer-diversity waterfall for visualising demodulator health.
+
+> **No `packetd` required.** Earlier versions consumed pre-decoded AX.25 frames from KA9Q-Radio's `packetd` daemon. rtpigate now performs RTP de-jitter, AFSK demodulation, HDLC framing, CRC validation, and AX.25/APRS parsing itself via the [`aprs-rtp`](https://crates.io/crates/aprs-rtp) and [`aprs-decode`](https://crates.io/crates/aprs-decode) crates. Point the `[rtp]` section at a channel's **audio** (PCM) multicast group — not an AX.25 frame group — and you no longer need to run `packetd` at all.
 
 ## Features
 
 - **Receive-only iGate** (RF to Internet) using `qAO` construct
-- **Multi-frequency support** via KA9Q-Radio's RTP multicast stream
+- **In-process AFSK demodulation** — RTP de-jitter, 1200-baud demod, HDLC/CRC, and AX.25/APRS parsing all in Rust (no external `packetd`)
+- **Multi-slicer demodulator** — a bank of parallel amplitude-imbalance slicers (default 8) maximises decode rate across twisted/imbalanced audio
+- **Multi-frequency support** via KA9Q-Radio's RTP audio multicast stream
 - **Position beaconing** and **APRS telemetry** to APRS-IS
 - **Real-time web dashboard** with Server-Sent Events (SSE)
   - Live packet table with APRS symbol icons, coordinates, and distance
   - Last-heard stations table sorted by packet count
   - Sparkline charts for RF and APRS-IS statistics
+  - **Slicer-diversity waterfall** heatmap for visualising demodulator health and audio twist
   - Callsign links to aprs.fi, coordinate links to Google/Apple Maps
   - Dark/light theme toggle
   - Mobile-responsive layout
@@ -26,10 +31,11 @@ Four concurrent async tasks orchestrated with tokio:
 
 ```
                                                                      +-----------+
-+-----------+   RTP/UDP    +----------+  broadcast  +--------+  SSE  |   axum    |
-| KA9Q-Radio| (multicast)  | ka9q.rs  | (DataItem)  | sse.rs | ----> | /api/sse  | --> Browser
-|   (SDR)   | -----------> |          | ----------> |        |       +-----------+
-+-----------+              +----------+             +--------+
++-----------+  RTP audio   +----------+  broadcast  +--------+  SSE  |   axum    |
+| KA9Q-Radio| (PCM/UDP     | ka9q.rs  | (DataItem)  | sse.rs | ----> | /api/sse  | --> Browser
+|   (SDR)   |  multicast)  | aprs-rtp | ----------> |        |       +-----------+
+|           | -----------> | aprs-dec |             +--------+
++-----------+              +----------+
                                 |
                                 | broadcast (DataItem)
                                 v
@@ -39,7 +45,7 @@ Four concurrent async tasks orchestrated with tokio:
                            +----------+          +-----------+
 ```
 
-- **ka9q.rs** -- Binds to UDP multicast, parses RTP headers and AX.25 frames, extracts APRS packets. Reconnects with backoff on socket failure.
+- **ka9q.rs** -- Subscribes to the KA9Q-Radio **audio** RTP multicast group via the `aprs-rtp` crate, which de-jitters the stream, demodulates the 1200-baud AFSK through a bank of parallel slicers, frames HDLC, validates the CRC, and parses AX.25. Each decoded frame's APRS payload (position, Mic-E, object, item, altitude, symbol) is then parsed with the `aprs-decode` crate and mapped to the internal packet type. Also aggregates per-slicer decode counts for the waterfall and reconnects with backoff on failure.
 - **aprs_is.rs** -- Maintains persistent TCP connection to APRS-IS with capped exponential backoff (5s to 300s). Handles login verification, beaconing, and telemetry.
 - **igate.rs** -- Applies igating filter rules (rfonly, staleness, satellite, query, third-party, duplicates).
 - **sse.rs** -- Serializes packets and telemetry to JSON, pushes to SSE broadcast channel.
@@ -50,7 +56,7 @@ Graceful shutdown via `CancellationToken` on SIGTERM/SIGINT with clean TCP FIN t
 ## Requirements
 
 - **Rust** 2024 edition (1.85+)
-- **KA9Q-Radio** running and producing RTP multicast AX.25 frames
+- **KA9Q-Radio** running with a channel configured for **APRS** (1200-baud, ~12 kHz sample rate FM/PCM audio) and producing an RTP **audio** multicast group. `packetd` is **not** required — rtpigate demodulates the audio itself.
 - A valid **APRS-IS passcode** for your callsign (if igating/beaconing)
 - **Apache** or **nginx** as a reverse proxy (recommended for production)
 
@@ -156,8 +162,15 @@ overlay = "R"                  # Symbol overlay character. Omit for primary tabl
 threshold = 600                # Beacon/telemetry interval in seconds (default: 600 = 10min).
 
 [rtp]
-host = "ax25.local"            # KA9Q-Radio multicast hostname or IP. Required.
+host = "packet.local"          # KA9Q-Radio AUDIO multicast hostname or IP. Required.
+                               # Point this at the channel's PCM audio group,
+                               # NOT an AX.25/packetd frame group.
 port = 5004                    # KA9Q-Radio multicast UDP port. Required.
+
+[satellite]                    # Optional section. Defaults to [145.825] if omitted.
+frequencies = [145.825]        # Frequencies (MHz) treated as satellite downlinks.
+                               # Packets on these are gated only when digipeated
+                               # or from a known satellite (see Igating Rules).
 
 [http]                         # Optional section.
 listen = "127.0.0.1:3000"     # HTTP listen address (default: 127.0.0.1:3000).
@@ -306,6 +319,41 @@ Two groups of mini charts showing activity over the last ~25 minutes (100 data p
 
 Hover over the `(?)` next to each label for a description. On touch devices, tap the `(?)`.
 
+### Slicer Activity Waterfall
+
+A heatmap that visualises how the in-process AFSK demodulator is performing. It is the most useful tuning aid in the dashboard once you understand what it shows.
+
+**Background — what a "slicer" is.** The `aprs-rtp` demodulator does not run a single AFSK decoder; it runs a *bank* of them in parallel (8 by default). Each decoder, or **slicer**, applies a different gain to the space tone relative to the mark tone before deciding which bit was sent:
+
+```
+demod_out = mark_amplitude − (space_amplitude × gain)
+```
+
+The gains are spread geometrically across the bank (default `0.5` → `4.0`). This compensates for **audio twist** — the amplitude imbalance between the 1200 Hz mark and 2200 Hz tones that pre-emphasis (transmitter) and de-emphasis (receiver) introduce:
+
+- **gain < 1** (low-numbered slicers) — attenuates space, so it favors **loud-space / pre-emphasized** signals.
+- **gain ≈ 1** (middle slicers) — balanced, favors **flat-audio** signals.
+- **gain > 1** (high-numbered slicers) — boosts space, so it favors **loud-mark / de-emphasized** signals.
+
+A single frame is fed to every slicer at once, and any slicer that produces a CRC-valid frame "wins." Running many slicers therefore recovers packets that a single fixed decoder would miss.
+
+**Reading the heatmap.**
+
+- **Columns** are the individual slicers, left-to-right in increasing gain. The header under each column shows the **mark:space ratio** for that slicer (e.g. `2.0:1`, `1:1`, `1:4.0`).
+- A **zone strip** above the columns groups them into **pre-emph** (green), **flat** (grey), and **de-emph** (amber) bands so you can see the twist regions at a glance.
+- **Rows** are 15-second windows, **newest on top**, up to 10 rows (~2.5 minutes of history). The leftmost cell of each row is its timestamp.
+- **Each cell** shows how many frames *that slicer* recovered during *that window*, with brightness scaled to the busiest cell on screen — **brighter green = more packets**. Empty cells stay dark.
+
+**How to interpret it.**
+
+- **Activity spread across many columns** generally means strong, clean signals — most slicers can decode them, so the frame is recovered redundantly.
+- **Activity clustered on the left (pre-emph) columns** means incoming audio is loud-space — typical when receiving signals through a path that adds pre-emphasis without matching de-emphasis.
+- **Activity clustered on the right (de-emph) columns** means incoming audio is loud-mark — a sign your receiver is applying de-emphasis to already-flat audio, or the transmitter is flat.
+- **Activity concentrated in the middle (flat) columns** means your audio path is well balanced — the ideal case.
+- **A persistent lean to one side** is a tuning hint: adjusting the receive audio de-emphasis (or the KA9Q-Radio channel's audio settings) to re-center activity toward the flat zone usually improves the overall decode rate. Slicers that never light up are effectively unused for your current signal conditions.
+
+Hover (or tap) any cell or column header for exact counts, gains, and ratios.
+
 ### Recent Packets Table
 
 The last 20 packets in reverse chronological order:
@@ -317,7 +365,7 @@ The last 20 packets in reverse chronological order:
 | Source | Callsign (links to aprs.fi) |
 | Freq | Frequency in MHz (highlighted green if not 144.390) |
 | Direct | T (green) if heard direct, F if digipeated |
-| Satellite | T (green) if on 145.825 MHz |
+| Satellite | T (green) if on a configured satellite frequency (`[satellite] frequencies`, default 145.825 MHz) |
 | Coordinates | Lat, lon with distance from station (links to Google/Apple Maps) |
 | Packet | Info field text (click to see full raw packet with address path) |
 
@@ -343,7 +391,7 @@ A received RF packet is **dropped** (not igated) if any of the following apply:
 1. Path contains `TCPIP`, `TCPXX`, `NOGATE`, or `RFONLY`
 2. Packet is a generic query (data type `?`)
 3. Third-party packet (`}`) with `TCPIP` or `TCPXX` in inner header
-4. Heard directly on satellite frequency (145.825 MHz) unless from a known satellite (`RS0ISS`, `DP0SNX`, `A55BTN`)
+4. Heard directly (not digipeated) on a configured satellite frequency (`[satellite] frequencies`, default 145.825 MHz) unless the source is a known satellite (`RS0ISS`, `NA1SS`, `DP0ISS`, `OR4ISS`, `IR0ISS`, `DP0SNX`)
 5. Packet age exceeds 30 seconds (staleness guard)
 6. Duplicate of a packet igated within the last 30 seconds (same source + info)
 7. No valid passcode configured
@@ -392,9 +440,14 @@ sudo systemctl status rtpigate
 
 This tags the version, builds the `.deb` package via `cargo-deb`, and creates a GitHub release with the package attached.
 
-## Vendored Dependencies
+## Key Dependencies
 
-`vendor/aprs-parser-rs/` is a local fork of [aprs-parser-rs](https://github.com/Turbo87/aprs-parser-rs) v0.4.2 with altitude parsing fixes. It is referenced as a path dependency in `Cargo.toml`.
+The RF receive path is built on two crates from crates.io (no vendored fork is required anymore):
+
+- **[`aprs-rtp`](https://crates.io/crates/aprs-rtp)** — subscribes to a KA9Q-Radio RTP audio multicast group, de-jitters it, demodulates 1200-baud AFSK through the parallel slicer bank, frames HDLC, validates CRC (single-bit error recovery by default), and parses AX.25. Decoder defaults: 8 slicers, space-gain ladder `0.5`–`4.0`, 2-packet jitter buffer.
+- **[`aprs-decode`](https://crates.io/crates/aprs-decode)** — parses the APRS information field (position, Mic-E, object, item, altitude, and map symbol) from each decoded frame.
+
+Other notable dependencies: `tokio` (async runtime), `axum` + `tower-http` (HTTP/SSE server), `serde`/`serde_json` (telemetry serialization), and `chrono` (timestamps).
 
 ## License
 

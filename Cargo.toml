@@ -1,6 +1,6 @@
 [package]
 name = "rtpigate"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Jeff Deaton"]
 description = "APRS iGate for KA9Q-Radio backend"
@@ -27,7 +27,7 @@ aprs-decode = "0.1"
 maintainer = "Jeff Deaton <deatojef@yahoo.com>"
 section = "hamradio"
 priority = "optional"
-extended-description = "Receives AX.25 frames via RTP multicast from KA9Q-Radio, filters them, and gates them to the APRS-IS internet network. Includes a web dashboard with real-time packet display via Server-Sent Events."
+extended-description = "Receives audio streams over RTP multicast from KA9Q-Radio, demodulates AFSK, decodes the resulting APRS packets, filters them, and gates them to the APRS-IS internet network. Includes a web dashboard with real-time packet display via Server-Sent Events."
 depends = "$auto"
 conf-files = ["/etc/rtpigate/config.toml"]
 maintainer-scripts = "deploy/debian/"
