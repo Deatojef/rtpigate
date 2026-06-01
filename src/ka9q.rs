@@ -1,17 +1,37 @@
-use tokio::{net::UdpSocket, sync::broadcast, time::{interval, sleep, Duration}};
+use tokio::{sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, net::{Ipv4Addr, SocketAddr, ToSocketAddrs}, sync::Arc, fmt, time::Instant};
-use rtp_rs::RtpReader;
+use std::{collections::{HashMap, VecDeque}, sync::Arc, fmt, time::Instant};
 use serde::Serialize;
-use socket2::{Domain, Protocol, Socket, Type};
 use chrono::{DateTime, Local, Utc};
-use ax25::frame::{Ax25Frame, FrameContent};
 
 use log::{info, warn, error, debug};
-use aprs_parser::{AprsPacket, AprsData};
 
-use crate::config::{Config, AppTelemetry, PacketTelemetry, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
+use aprs_rtp::{AprsListener, config::{SourceConfig, DecoderConfig}};
+use aprs_decode::packet::{AprsPacket as DecodedPacket, AprsData};
+
+use crate::config::{Config, AppTelemetry, PacketTelemetry, SlicerTelemetry, SlicerInterval, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
 use crate::error::RtpigateError;
+
+// Per-slicer space-gain ladder, replicating aprs-rtp's `afsk::slicer::space_gains`
+// (which is crate-private). Each slicer applies `demod_out = mark - space * gain`,
+// so `gain < 1` favors loud-space (pre-emphasized) signals and `gain > 1` favors
+// loud-mark (de-emphasized) signals. The ladder is a geometric progression from
+// `min_g` to `max_g` over `n` rungs; a single slicer uses unity gain. Kept in sync
+// with the DecoderConfig we pass to the listener so the frontend labels stay truthful.
+fn space_gains(n: usize, min_g: f32, max_g: f32) -> Vec<f32> {
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![1.0];
+    }
+    let step = (max_g / min_g).powf(1.0 / (n - 1) as f32);
+    let mut gains = vec![min_g];
+    for i in 1..n {
+        gains.push(gains[i - 1] * step);
+    }
+    gains
+}
 
 // the packet structure (created by the RTP thread for incoming RTP packets)
 #[derive(Debug, Clone, Serialize)]
@@ -26,7 +46,7 @@ pub struct RTPPacket {
     #[serde(skip)]
     pub received_instant: Instant,
 
-    // the packet itself 
+    // the packet itself
     pub raw: String,
     pub info: String,
 
@@ -80,14 +100,19 @@ pub struct RTPPacket {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub altitude_ft: Option<f64>,
+
+    // bitmask of demodulator slicers that decoded this frame (bit i = slicer i).
+    // Used only for the slicer-waterfall aggregation; not serialised per-packet.
+    #[serde(skip)]
+    pub slicer_mask: u16,
 }
 
 impl fmt::Display for RTPPacket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{0: <24} {1: <10} {2:.3}MHz direct: {3: <6} rfonly: {4: <6} {5:}", 
-            self.receivetime.format("%Y-%m-%d %H:%M:%S%.3f"), 
+            "{0: <24} {1: <10} {2:.3}MHz direct: {3: <6} rfonly: {4: <6} {5:}",
+            self.receivetime.format("%Y-%m-%d %H:%M:%S%.3f"),
             self.source,
             self.frequency,
             self.heard_direct,
@@ -117,76 +142,17 @@ pub enum Packet {
 }
 
 
-// Retuns a SocketAddr from the "hostname:port" string provided
-fn get_multicast_socket_addr(address: &str) -> Result<SocketAddr, RtpigateError> {
-
-    // convert the address to socket address
-    let mut addrs = address.to_socket_addrs()
-        .map_err(|e| RtpigateError::Network(format!("Unable to parse address {}: {}", address, e)))?;
-
-    addrs.next()
-        .ok_or_else(|| RtpigateError::Network(format!("No valid socket address found for {}", address)))
-}
+// Constant slices for packet classification — no heap allocation per packet
+const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
+const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
 
 
-// return a new UDP socket bound to the provided multicast address
-fn bind_multicast(multicast_addr: SocketAddr) -> Result<std::net::UdpSocket, RtpigateError> {
-
-    if !multicast_addr.ip().is_multicast() {
-        return Err(RtpigateError::Validation(format!("{} is not a multicast address", multicast_addr)));
-    }
-
-    // create a socket for connecting
-    let std_socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-
-    std_socket.set_reuse_address(true)?;
-
-    // Request a generous UDP receive buffer to absorb scheduler delays and bursts.
-    // Linux silently caps this to net.core.rmem_max — log the actual size so the
-    // operator can raise the sysctl if needed.
-    const REQUESTED_RCVBUF: usize = 8 * 1024 * 1024;
-    if let Err(e) = std_socket.set_recv_buffer_size(REQUESTED_RCVBUF) {
-        warn!("Unable to set UDP recv buffer to {} bytes: {}", REQUESTED_RCVBUF, e);
-    }
-    match std_socket.recv_buffer_size() {
-        Ok(actual) => {
-            if actual < REQUESTED_RCVBUF {
-                warn!(
-                    "UDP recv buffer is {} bytes (requested {}). \
-                     Increase net.core.rmem_max to reduce kernel-level packet drops.",
-                    actual, REQUESTED_RCVBUF
-                );
-            } else {
-                info!("UDP recv buffer: {} bytes", actual);
-            }
-        },
-        Err(e) => warn!("Unable to read UDP recv buffer size: {}", e),
-    }
-
-    std_socket.bind(&multicast_addr.into())?;
-    std_socket.set_nonblocking(true)?;
-
-    if let SocketAddr::V4(addr_v4) = multicast_addr {
-        let multi_addr = addr_v4.ip();
-        std_socket.join_multicast_v4(multi_addr, &Ipv4Addr::UNSPECIFIED)?;
-        Ok(std_socket.into())
-    } else {
-        Err(RtpigateError::Validation("Only IPv4 multicast is supported".into()))
-    }
-}
-
-
-// Sets up a UDP socket bound to the given multicast address
-fn setup_multicast_socket(address: &str) -> Result<UdpSocket, RtpigateError> {
-    let multicast_addr = get_multicast_socket_addr(address)?;
-    let std_socket = bind_multicast(multicast_addr)?;
-    let udp_socket = UdpSocket::from_std(std_socket)?;
-    Ok(udp_socket)
-}
-
-
-// Listens for RTP packets on a given multicast address and calls the parse_rtp_packet function
-// with the parsed RTP header and payload.  Normally, this will never return - it loops forever.
+// Listens to a ka9q-radio RTP multicast audio group via the `aprs-rtp` crate,
+// which performs RTP dejitter, 1200-baud AFSK demodulation, HDLC framing, CRC
+// validation and AX.25 parsing internally. Decoded packets are mapped into the
+// internal RTPPacket type and broadcast on the shared data channel.
+//
+// Normally this never returns — it loops forever, reconnecting on failure.
 pub async fn rtp_listener(
     data_channel: broadcast::Sender<DataItem>,
     token: CancellationToken,
@@ -196,15 +162,15 @@ pub async fn rtp_listener(
 
     info!("Started");
 
-    // get the address and port of the multicast end point we need to connect too
-    let address = format!("{}:{}", config.rtp.host, config.rtp.port);
-
     // satellite frequencies sourced from config (default [145.825] if unset)
     let sat_freqs = config.satellite_frequencies();
 
     // per-interval statistics
     let mut heard_direct = 0;
     let mut digipeated = 0;
+    // `decode_errors` is retained for telemetry/frontend compatibility. The
+    // aprs-rtp crate only emits successfully-decoded packets over the channel,
+    // so this counter is never incremented and always reports 0.
     let mut decode_errors = 0;
     let mut total_packets = 0;
 
@@ -212,7 +178,7 @@ pub async fn rtp_listener(
     let mut lifetime_total_packets: u64 = 0;
     let mut lifetime_heard_direct: u64 = 0;
     let mut lifetime_digipeated: u64 = 0;
-    let mut lifetime_decode_errors: u64 = 0;
+    let lifetime_decode_errors: u64 = 0;
 
     // station tracking (never cleared)
     let mut station_map: HashMap<String, StationEntry> = HashMap::new();
@@ -236,15 +202,25 @@ pub async fn rtp_listener(
         data: VecDeque::new(),
     };
 
+    // decoder configuration; `slicers` (default 8) drives the waterfall column
+    // count and is the single source of truth for the slicer bank size.
+    let decoder = DecoderConfig::default();
+    let slicer_count = decoder.slicers;
+    let slicer_gains = space_gains(slicer_count, decoder.min_gain, decoder.max_gain);
+
+    // per-slicer accumulators for the slicer-diversity waterfall. `slicer_interval`
+    // counts demodulations in the current 15s window; `slicer_history` keeps the
+    // last 10 windows (heatmap rows); `lifetime_slicer_hits` never resets.
+    let mut slicer_interval: Vec<u32> = vec![0; slicer_count];
+    let mut slicer_history: VecDeque<SlicerInterval> = VecDeque::new();
+    let mut lifetime_slicer_hits: Vec<u64> = vec![0; slicer_count];
+
     // the interval for when to send statistics
     let mut time_interval = interval(Duration::from_secs(15));
 
     // backoff state for reconnection
     let mut backoff_secs: u64 = 5;
     const MAX_BACKOFF_SECS: u64 = 300;
-
-    // buffer where we store incoming bytes
-    let mut buf = [0u8; 1500];
 
     // outer reconnection loop
     loop {
@@ -253,14 +229,27 @@ pub async fn rtp_listener(
             break;
         }
 
-        // attempt socket setup
-        let udp_socket = match setup_multicast_socket(&address) {
-            Ok(s) => {
+        // build the aprs-rtp source/decoder configuration. The [rtp] section
+        // now points at a ka9q-radio channel *audio* multicast group; the
+        // decoder demodulates the PCM stream itself. Tuning knobs use crate
+        // defaults (8 slicers, single-bit CRC fix, 2-packet jitter buffer).
+        let source = SourceConfig {
+            host: config.rtp.host.clone(),
+            port: config.rtp.port as u16,
+            interface: None,
+            jitter_buffer: 2,
+            ssrc: Vec::new(),
+        };
+
+        // start the listener; on failure back off and retry just like the
+        // previous socket-setup path did.
+        let mut rx = match AprsListener::new(source, decoder.clone()).run().await {
+            Ok(rx) => {
                 backoff_secs = 5;
-                s
+                rx
             },
             Err(e) => {
-                error!("RTP socket setup failed: {}. Retrying in {}s...", e, backoff_secs);
+                error!("APRS RTP listener setup failed: {}. Retrying in {}s...", e, backoff_secs);
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
@@ -270,7 +259,7 @@ pub async fn rtp_listener(
             },
         };
 
-        info!("Connected to RTP multicast address: {}", address);
+        info!("Connected to RTP multicast audio: {}:{}", config.rtp.host, config.rtp.port);
 
         // inner packet read loop
         loop {
@@ -326,6 +315,27 @@ pub async fn rtp_listener(
                         warn!("Failed to send statistics data to channel: {}", e);
                     }
 
+                    // snapshot this window's per-slicer counts and keep the last 10
+                    // (the waterfall shows 10 rows, unlike the 100-point sparklines).
+                    slicer_history.push_back(SlicerInterval { timestamp: the_time, counts: slicer_interval.clone() });
+                    while slicer_history.len() > 10 {
+                        slicer_history.pop_front();
+                    }
+
+                    let slicer_data = SlicerTelemetry {
+                        name: String::from("slicer_statistics"),
+                        timestamp: the_time,
+                        microsecs,
+                        slicer_count,
+                        slicer_gains: slicer_gains.clone(),
+                        intervals: slicer_history.clone(),
+                        lifetime_slicer_hits: lifetime_slicer_hits.clone(),
+                    };
+
+                    if let Err(e) = data_channel.send(DataItem::Tlm(AppTelemetry::SlicerStatus(slicer_data))) {
+                        warn!("Failed to send slicer statistics to channel: {}", e);
+                    }
+
                     // Evict stations not heard in the last 36 hours
                     let evict_threshold = chrono::Duration::hours(36);
                     let now = Local::now();
@@ -370,136 +380,131 @@ pub async fn rtp_listener(
                     digipeated = 0;
                     decode_errors = 0;
                     total_packets = 0;
+                    for c in slicer_interval.iter_mut() {
+                        *c = 0;
+                    }
 
                 },
 
 
-                // read from the socket
-                result = udp_socket.recv(&mut buf) => {
-                    match result {
+                // read the next decoded packet from the aprs-rtp channel
+                maybe_pkt = rx.recv() => {
+                    match maybe_pkt {
 
-                        // read was successful
-                        Ok(num_bytes) => {
-                            match RtpReader::new(&buf[..num_bytes]) {
-                                Ok(rtp) => {
+                        // a packet was decoded
+                        Some(rtp_pkt) => {
 
-                                    // decode this packet into APRS then add it to downstream consumer queues
-                                    // (i.e. aprs-is connection for igating, database writes, etc.)
-                                    match parse_rtp_packet(rtp) {
-                                        Ok(mut p) => {
+                            // map the aprs-rtp packet into our internal RTPPacket,
+                            // running aprs-decode for position/object/item/symbol data.
+                            let MappedPacket { mut packet, symbol_table: sym_table, symbol_code: sym_code } = map_packet(rtp_pkt);
 
-                                            // Apply runtime-config-driven flags. is_satellite must be
-                                            // set before droppacket() so the sat-frequency policy fires.
-                                            p.is_satellite = sat_freqs.contains(&p.frequency);
-                                            p.igated = crate::igate::droppacket(&p).is_none();
+                            // Apply runtime-config-driven flags. is_satellite must be
+                            // set before droppacket() so the sat-frequency policy fires.
+                            packet.is_satellite = sat_freqs.contains(&packet.frequency);
+                            packet.igated = crate::igate::droppacket(&packet).is_none();
+                            let p = packet;
 
-                                            if p.heard_direct {
-                                                heard_direct += 1;
-                                                lifetime_heard_direct += 1;
-                                            } else {
-                                                digipeated += 1;
-                                                lifetime_digipeated += 1;
-                                            }
-                                            total_packets += 1;
-                                            lifetime_total_packets += 1;
+                            if p.heard_direct {
+                                heard_direct += 1;
+                                lifetime_heard_direct += 1;
+                            } else {
+                                digipeated += 1;
+                                lifetime_digipeated += 1;
+                            }
+                            total_packets += 1;
+                            lifetime_total_packets += 1;
 
-                                            // update station tracking
-                                            let freq_key = format!("{:.3}", p.frequency);
-                                            let freq_entry = freq_counts.entry(freq_key).or_insert((0, p.receivetime));
-                                            freq_entry.0 += 1;
-                                            freq_entry.1 = p.receivetime;
+                            // tally each slicer that demodulated this frame for the
+                            // diversity waterfall (a frame may be decoded by several).
+                            for s in 0..slicer_count {
+                                if p.slicer_mask & (1 << s) != 0 {
+                                    slicer_interval[s] += 1;
+                                    lifetime_slicer_hits[s] += 1;
+                                }
+                            }
 
-                                            // extract symbol table/code from info field
-                                            let (sym_table, sym_code) = extract_symbol_chars(&p.info, &p.destination);
+                            // update station tracking
+                            let freq_key = format!("{:.3}", p.frequency);
+                            let freq_entry = freq_counts.entry(freq_key).or_insert((0, p.receivetime));
+                            freq_entry.0 += 1;
+                            freq_entry.1 = p.receivetime;
 
-                                            // use object/item name as station key if present
-                                            let station_key = p.object_name.clone().unwrap_or_else(|| p.source.clone());
-                                            let transmitted_by = p.object_name.as_ref().map(|_| p.source.clone());
+                            // use object/item name as station key if present
+                            let station_key = p.object_name.clone().unwrap_or_else(|| p.source.clone());
+                            let transmitted_by = p.object_name.as_ref().map(|_| p.source.clone());
 
-                                            let entry = station_map.entry(station_key.clone()).or_insert_with(|| StationEntry {
-                                                callsign: station_key,
-                                                transmitted_by: transmitted_by.clone(),
-                                                last_heard: p.receivetime,
-                                                frequency: p.frequency,
-                                                latitude: None,
-                                                longitude: None,
-                                                altitude_ft: None,
-                                                heard_direct: p.heard_direct,
-                                                position_path: p.digipeater_path.clone(),
-                                                position_hops: p.hops,
-                                                altitude_path: p.digipeater_path.clone(),
-                                                altitude_hops: p.hops,
-                                                symbol_table: None,
-                                                symbol_code: None,
-                                                count: 0,
-                                                count_direct: 0,
-                                                count_digipeated: 0,
-                                            });
-                                            entry.last_heard = p.receivetime;
-                                            entry.frequency = p.frequency;
-                                            entry.heard_direct = p.heard_direct;
-                                            if let Some(ref tb) = transmitted_by {
-                                                entry.transmitted_by = Some(tb.clone());
-                                            }
-                                            entry.count += 1;
-                                            if p.heard_direct {
-                                                entry.count_direct += 1;
-                                            } else {
-                                                entry.count_digipeated += 1;
-                                            }
-                                            if p.latitude.is_some() && p.longitude.is_some() {
-                                                entry.latitude = p.latitude;
-                                                entry.longitude = p.longitude;
-                                                entry.position_path = p.digipeater_path.clone();
-                                                entry.position_hops = p.hops;
-                                            }
-                                            if let Some(alt) = p.altitude_ft {
-                                                if entry.altitude_ft.is_none_or(|prev| alt > prev) {
-                                                    entry.altitude_path = p.digipeater_path.clone();
-                                                    entry.altitude_hops = p.hops;
-                                                }
-                                                entry.altitude_ft = Some(entry.altitude_ft.map_or(alt, |prev| prev.max(alt)));
-                                            }
-                                            if let Some(st) = sym_table {
-                                                entry.symbol_table = Some(st);
-                                            }
-                                            if let Some(sc) = sym_code {
-                                                entry.symbol_code = Some(sc);
-                                            }
+                            let entry = station_map.entry(station_key.clone()).or_insert_with(|| StationEntry {
+                                callsign: station_key,
+                                transmitted_by: transmitted_by.clone(),
+                                last_heard: p.receivetime,
+                                frequency: p.frequency,
+                                latitude: None,
+                                longitude: None,
+                                altitude_ft: None,
+                                heard_direct: p.heard_direct,
+                                position_path: p.digipeater_path.clone(),
+                                position_hops: p.hops,
+                                altitude_path: p.digipeater_path.clone(),
+                                altitude_hops: p.hops,
+                                symbol_table: None,
+                                symbol_code: None,
+                                count: 0,
+                                count_direct: 0,
+                                count_digipeated: 0,
+                            });
+                            entry.last_heard = p.receivetime;
+                            entry.frequency = p.frequency;
+                            entry.heard_direct = p.heard_direct;
+                            if let Some(ref tb) = transmitted_by {
+                                entry.transmitted_by = Some(tb.clone());
+                            }
+                            entry.count += 1;
+                            if p.heard_direct {
+                                entry.count_direct += 1;
+                            } else {
+                                entry.count_digipeated += 1;
+                            }
+                            if p.latitude.is_some() && p.longitude.is_some() {
+                                entry.latitude = p.latitude;
+                                entry.longitude = p.longitude;
+                                entry.position_path = p.digipeater_path.clone();
+                                entry.position_hops = p.hops;
+                            }
+                            if let Some(alt) = p.altitude_ft {
+                                if entry.altitude_ft.is_none_or(|prev| alt > prev) {
+                                    entry.altitude_path = p.digipeater_path.clone();
+                                    entry.altitude_hops = p.hops;
+                                }
+                                entry.altitude_ft = Some(entry.altitude_ft.map_or(alt, |prev| prev.max(alt)));
+                            }
+                            if let Some(st) = sym_table {
+                                entry.symbol_table = Some(st);
+                            }
+                            if let Some(sc) = sym_code {
+                                entry.symbol_code = Some(sc);
+                            }
 
-                                            // log this
-                                            debug!("{:3.3}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
+                            // log this
+                            debug!("{:3.3}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
-                                            // append to the 24h satellite packet log (newest-first
-                                            // ordering is maintained at read time).
-                                            if p.is_satellite {
-                                                if let Ok(mut log) = sat_packet_log.write() {
-                                                    log.push_back(p.clone());
-                                                }
-                                            }
+                            // append to the 24h satellite packet log (newest-first
+                            // ordering is maintained at read time).
+                            if p.is_satellite {
+                                if let Ok(mut log) = sat_packet_log.write() {
+                                    log.push_back(p.clone());
+                                }
+                            }
 
-                                            // attempt to send this packet to the channel so downstream
-                                            // consumers can process this packet.
-                                            if let Err(e) = data_channel.send(DataItem::Pkt(Packet::RTP(p))) {
-                                                warn!("Channel send failed: {}", e);
-                                            }
-                                        },
-
-                                        Err(e) => {
-                                            decode_errors += 1;
-                                            lifetime_decode_errors += 1;
-                                            warn!("RTP parse error: {}", e);
-                                        },
-                                    };
-                                },
-
-                                Err(e) => warn!("Not an RTP packet: {:?}", e),
+                            // attempt to send this packet to the channel so downstream
+                            // consumers can process this packet.
+                            if let Err(e) = data_channel.send(DataItem::Pkt(Packet::RTP(p))) {
+                                warn!("Channel send failed: {}", e);
                             }
                         },
 
-                        // socket read error - break inner loop to reconnect
-                        Err(e) => {
-                            error!("RTP socket read failed: {}. Will reconnect...", e);
+                        // the aprs-rtp listener closed its channel - break inner loop to reconnect
+                        None => {
+                            error!("APRS RTP listener channel closed. Will reconnect...");
                             break;
                         },
                     }
@@ -517,287 +522,119 @@ pub async fn rtp_listener(
 }
 
 
-// Constant slices for packet classification — no heap allocation per packet
-const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
-const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
-
-// used to parse an incoming RTP packet (w/ AX25 payload) into various source, destination,
-// addresses, info fields.
-fn parse_rtp_packet(rtp: RtpReader) -> Result<RTPPacket, RtpigateError> {
-
-    // Attempt to parse the payload
-    match Ax25Frame::from_bytes(rtp.payload()) {
-        Ok(ax25_frame) => {
-
-            // the time this packet was received. Capture both the wall-clock
-            // (for display/SSE) and a monotonic Instant (for age checks).
-            let receivetime = Local::now();
-            let received_instant = Instant::now();
-
-            // the frequency this packet was heard over
-            let frequency = rtp.ssrc() as f64 / 1000.0;
-
-            // get the ax25 frame from the rtp packet's payload
-            let ax25infofield = match ax25_frame.content {
-                FrameContent::UnnumberedInformation(information) => information.info,
-                _ => return Err(RtpigateError::Parse(format!("{}MHz Not an AX.25 UI frame", frequency))),
-            };
-
-            let source = ax25_frame.source.to_string();
-            let destination = ax25_frame.destination.to_string();
-
-            // stringify route elements once and reuse
-            let route_strings: Vec<(String, bool)> = ax25_frame.route.iter()
-                .map(|p| (p.repeater.to_string(), p.has_repeated))
-                .collect();
-
-            // construct the viapath
-            let viapath = route_strings.iter()
-                .map(|(s, _)| s.as_str())
-                .collect::<Vec<&str>>()
-                .join(",");
-
-            // filtered digipeater path (real callsigns only, no WIDE/TCPIP/etc.)
-            let digipeater_path: Vec<String> = route_strings.iter()
-                .filter(|(s, _)| EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
-                .map(|(s, _)| s.clone())
-                .collect();
-            let hops = digipeater_path.len() as u32;
-
-            // build the APRS text efficiently using push_str
-            let mut aprstext = String::with_capacity(source.len() + destination.len() + viapath.len() + 64);
-            aprstext.push_str(&source);
-            aprstext.push('>');
-            aprstext.push_str(&destination);
-            aprstext.push(',');
-            aprstext.push_str(&viapath);
-
-            // did this station hear this packet directly or was it digipeated?
-            let heard_direct: bool = !route_strings.iter()
-                .any(|(s, repeated)| *repeated && EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)));
-
-            // strict variant: any address at all that has been repeated, including WIDE.
-            // Used by the satellite igate filter — see igate::droppacket.
-            let was_digipeated: bool = route_strings.iter().any(|(_, repeated)| *repeated);
-
-            let heardfrom: String = if heard_direct {
-                source.clone()
-            } else {
-                route_strings.iter()
-                    .filter(|(s, repeated)| *repeated && EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
-                    .last()
-                    .map(|(s, _)| s.clone())
-                    .unwrap_or_else(|| source.clone())
-            };
-
-            // Check if this packet is RF only and should not be igated
-            let rfonly: bool = route_strings.iter()
-                .any(|(s, _)| RFONLY_ADDRS.iter().any(|x| s.contains(x)));
-
-            // the info data field
-            let mut infodata: Vec<u8> = ax25infofield;
-
-            // if there isn't an information field then we don't have a valid packet
-            if infodata.len() >= 2 {
-                // truncate off the last two bytes as those are the FCS crc data for the AX25 frame
-                infodata.truncate(infodata.len()-2);
-            } else {
-                return Err(RtpigateError::Parse(format!("{}MHz AX.25 frame missing information field: {}", frequency, aprstext)));
-            }
-
-            // convert the information field for the APRS packet to UTF8 text
-            let info = match String::from_utf8(infodata) {
-                Ok(s) => s,
-                Err(e) => {
-                    let lossy_info_field = String::from_utf8_lossy(e.as_bytes());
-                    return Err(RtpigateError::Parse(format!("{}MHz UTF-8 conversion failed: {}:{}. {}", frequency, aprstext, lossy_info_field, e)));
-                },
-            };
-
-            // append the information field
-            aprstext.push(':');
-            aprstext.push_str(info.trim());
-
-            // the APRS packet type
-            let ptype: char = match info.chars().next() {
-                Some(c) => c,
-                None => return Err(RtpigateError::Parse("No APRS data type found".into())),
-            };
-
-            // attempt to parse position data using aprs-parser-rs
-            let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
-            let mut object_name: Option<String> = None;
-            if let Ok(parsed) = AprsPacket::decode_textual(aprstext.as_bytes()) {
-                match parsed.data {
-                    AprsData::Position(pos) => {
-                        latitude = Some(*pos.position.latitude);
-                        longitude = Some(*pos.position.longitude);
-                        // check for altitude in comment (/A=NNNNNN)
-                        let comment = String::from_utf8_lossy(&pos.comment);
-                        if let Some(alt_idx) = comment.find("/A=") {
-                            let alt_str = &comment[alt_idx + 3..];
-                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
-                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
-                                altitude_ft = Some(alt);
-                            }
-                        }
-                    },
-                    AprsData::MicE(mice) => {
-                        latitude = Some(*mice.latitude);
-                        longitude = Some(*mice.longitude);
-                        if let Some(alt) = mice.altitude {
-                            altitude_ft = Some(alt.altitude_feet());
-                        }
-                    },
-                    AprsData::Object(obj) => {
-                        object_name = Some(String::from_utf8_lossy(&obj.name).to_string());
-                        latitude = Some(*obj.position.latitude);
-                        longitude = Some(*obj.position.longitude);
-                        let comment = String::from_utf8_lossy(&obj.comment);
-                        if let Some(alt_idx) = comment.find("/A=") {
-                            let alt_str = &comment[alt_idx + 3..];
-                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
-                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
-                                altitude_ft = Some(alt);
-                            }
-                        }
-                    },
-                    AprsData::Item(item) => {
-                        object_name = Some(String::from_utf8_lossy(&item.name).to_string());
-                        latitude = Some(*item.position.latitude);
-                        longitude = Some(*item.position.longitude);
-                        let comment = String::from_utf8_lossy(&item.comment);
-                        if let Some(alt_idx) = comment.find("/A=") {
-                            let alt_str = &comment[alt_idx + 3..];
-                            let end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
-                            if let Ok(alt) = alt_str[..end].parse::<f64>() {
-                                altitude_ft = Some(alt);
-                            }
-                        }
-                    },
-                    _ => {},
-                }
-            }
-
-            // return a new Packet structure. is_satellite and igated are set
-            // by rtp_listener after parsing, since they depend on runtime config.
-            Ok(RTPPacket {
-                receivetime,
-                received_instant,
-                is_satellite: false,
-                igated: false,
-                frequency,
-                path: viapath,
-                digipeater_path,
-                hops,
-                heardfrom,
-                heard_direct,
-                was_digipeated,
-                rfonly,
-                ptype,
-                source,
-                destination,
-                raw: aprstext,
-                info,
-                object_name,
-                latitude,
-                longitude,
-                altitude_ft,
-            })
-        },
-        Err(e) => Err(RtpigateError::Parse(format!("AX.25 frame parse failed: {:?}", e))),
-    }
+// A mapped RTPPacket together with the APRS symbol table/code parsed from the
+// same packet (used to populate per-station symbol info).
+struct MappedPacket {
+    packet: RTPPacket,
+    symbol_table: Option<char>,
+    symbol_code: Option<char>,
 }
 
-/// Extract APRS symbol table and code characters from the info field.
-/// Returns (Option<symbol_table>, Option<symbol_code>).
-fn extract_symbol_chars(info: &str, _destination: &str) -> (Option<char>, Option<char>) {
-    if info.len() < 2 {
-        return (None, None);
-    }
-    let data_type = info.as_bytes()[0] as char;
-    let chars: Vec<char> = info.chars().collect();
+// Map an aprs-rtp decoded packet into the internal RTPPacket type. The AX.25
+// framing (source/destination/path/heard-direct) is taken directly from the
+// aprs-rtp packet, and the APRS payload is re-parsed with aprs-decode to
+// extract position, altitude, object/item names and the map symbol.
+fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
 
-    match data_type {
-        '!' | '=' => {
-            if chars.len() >= 2 {
-                let c1 = chars[1];
-                if c1.is_ascii_digit() {
-                    // uncompressed: !DDMM.MMN<table>DDDMM.MMW<code>
-                    if chars.len() >= 20 {
-                        return (Some(chars[9]), Some(chars[19]));
-                    }
-                } else {
-                    // compressed: !<table>YYYYXXXX<code>csT
-                    if chars.len() >= 11 {
-                        return (Some(c1), Some(chars[10]));
-                    }
-                }
-            }
-        },
-        '/' | '@' => {
-            // timestamped: skip 7-char timestamp + data_type = offset 8
-            if chars.len() >= 9 {
-                let c8 = chars[8];
-                if c8.is_ascii_digit() {
-                    if chars.len() >= 27 {
-                        return (Some(chars[16]), Some(chars[26]));
-                    }
-                } else {
-                    if chars.len() >= 18 {
-                        return (Some(c8), Some(chars[17]));
-                    }
-                }
-            }
-        },
-        '`' | '\'' => {
-            // Mic-E: symbol at chars[7], table at chars[8]
-            if chars.len() >= 9 {
-                return (Some(chars[8]), Some(chars[7]));
-            }
-        },
-        ';' => {
-            // Object: ;name(9)*timestamp(7)position...
-            // offset 0=';', 1-9=name, 10=live/dead, 11-17=timestamp, 18+=position
-            if chars.len() >= 19 {
-                let c18 = chars[18];
-                if c18.is_ascii_digit() {
-                    // uncompressed: table at offset 26, code at offset 36
-                    if chars.len() >= 37 {
-                        return (Some(chars[26]), Some(chars[36]));
-                    }
-                } else {
-                    // compressed: table at offset 18, code at offset 27
-                    if chars.len() >= 28 {
-                        return (Some(c18), Some(chars[27]));
-                    }
-                }
-            }
-        },
-        ')' => {
-            // Item: )name(3-9)live/dead position...
-            // find the live/dead marker ('!' or ' ') to locate position start
-            let name_end = chars[1..].iter().take(9).position(|&c| c == '!' || c == ' ');
-            if let Some(ne) = name_end {
-                let pos_start = 1 + ne + 1; // skip ')' + name + live/dead marker
-                if chars.len() > pos_start {
-                    let c = chars[pos_start];
-                    if c.is_ascii_digit() {
-                        // uncompressed: table at pos_start+8, code at pos_start+18
-                        if chars.len() >= pos_start + 19 {
-                            return (Some(chars[pos_start + 8]), Some(chars[pos_start + 18]));
-                        }
-                    } else {
-                        // compressed: table at pos_start, code at pos_start+9
-                        if chars.len() >= pos_start + 10 {
-                            return (Some(c), Some(chars[pos_start + 9]));
-                        }
-                    }
-                }
-            }
-        },
-        _ => {},
+    // wall-clock receive time from the decoder; pair it with a fresh monotonic
+    // Instant for the staleness guard (channel delivery is effectively immediate).
+    let receivetime = DateTime::<Local>::from(pkt.received_at);
+    let received_instant = Instant::now();
+
+    // the information field as UTF-8 text (lossy for binary Mic-E/telemetry)
+    let info = String::from_utf8_lossy(&pkt.info).to_string();
+
+    // viapath and filtered digipeater path (real callsigns only)
+    let path = pkt.via.join(",");
+    let digipeater_path: Vec<String> = pkt.via.iter()
+        .filter(|s| EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
+        .cloned()
+        .collect();
+    let hops = digipeater_path.len() as u32;
+
+    // APRS data type identifier (first info byte)
+    let ptype: char = pkt.dti
+        .map(|b| b as char)
+        .or_else(|| info.chars().next())
+        .unwrap_or('\0');
+
+    // strict "any digipeater touched this" flag (includes WIDE-class fill-ins)
+    let was_digipeated = pkt.via_heard.iter().any(|&h| h);
+
+    // RF-only packets must not be igated
+    let rfonly = pkt.via.iter().any(|s| RFONLY_ADDRS.iter().any(|x| s.contains(x)));
+
+    // parse position/object/item data and the map symbol using aprs-decode.
+    // Prefer the validated AX.25 bytes; fall back to the TNC2 text on error.
+    let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
+    let mut object_name: Option<String> = None;
+    let (mut symbol_table, mut symbol_code) = (None, None);
+
+    let decoded = DecodedPacket::decode_ax25(&pkt.raw_ax25)
+        .or_else(|_| DecodedPacket::decode_textual(pkt.text.as_bytes()));
+    if let Ok(parsed) = decoded {
+        match parsed.data {
+            AprsData::Position(pos) => {
+                latitude = Some(pos.position.latitude.value());
+                longitude = Some(pos.position.longitude.value());
+                altitude_ft = pos.position.altitude.map(|a| a.feet);
+                symbol_table = Some(pos.position.symbol.table);
+                symbol_code = Some(pos.position.symbol.code);
+            },
+            AprsData::MicE(mice) => {
+                latitude = Some(mice.latitude.value());
+                longitude = Some(mice.longitude.value());
+                // aprs-decode reports Mic-E altitude in metres; convert to feet.
+                altitude_ft = mice.altitude_m.map(|m| m * 3.28084);
+                symbol_table = Some(mice.symbol_table);
+                symbol_code = Some(mice.symbol_code);
+            },
+            AprsData::Object(obj) => {
+                object_name = Some(String::from_utf8_lossy(&obj.name).to_string());
+                latitude = Some(obj.position.latitude.value());
+                longitude = Some(obj.position.longitude.value());
+                altitude_ft = obj.position.altitude.map(|a| a.feet);
+                symbol_table = Some(obj.position.symbol.table);
+                symbol_code = Some(obj.position.symbol.code);
+            },
+            AprsData::Item(item) => {
+                object_name = Some(String::from_utf8_lossy(&item.name).to_string());
+                latitude = Some(item.position.latitude.value());
+                longitude = Some(item.position.longitude.value());
+                altitude_ft = item.position.altitude.map(|a| a.feet);
+                symbol_table = Some(item.position.symbol.table);
+                symbol_code = Some(item.position.symbol.code);
+            },
+            _ => {},
+        }
     }
-    (None, None)
+
+    // is_satellite and igated are set by rtp_listener after mapping, since they
+    // depend on runtime config.
+    let packet = RTPPacket {
+        receivetime,
+        received_instant,
+        raw: pkt.text,
+        info,
+        path,
+        digipeater_path,
+        hops,
+        ptype,
+        source: pkt.source,
+        destination: pkt.destination,
+        heard_direct: pkt.heard_direct,
+        heardfrom: pkt.heard_from,
+        was_digipeated,
+        rfonly,
+        frequency: pkt.freq_mhz,
+        is_satellite: false,
+        igated: false,
+        object_name,
+        latitude,
+        longitude,
+        altitude_ft,
+        slicer_mask: pkt.slicer_mask,
+    };
+
+    MappedPacket { packet, symbol_table, symbol_code }
 }
-

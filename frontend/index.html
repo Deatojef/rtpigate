@@ -29,6 +29,7 @@
         </section>
 
         <section id="statistics">
+            <div class="stat-column">
             <div class="stat-group">
                 <h2>RF Packets <span class="stat-interval">(per 15s)</span></h2>
                 <div class="stat-row">
@@ -81,6 +82,13 @@
                     <span class="lifetime-item">Dropped <span id="lt-aprsis-dropped" class="lifetime-value">--</span></span>
                     <span class="lifetime-item">Reconnects <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
                 </div>
+            </div>
+            </div>
+            <div class="stat-group" id="waterfall-group">
+                <h2>Slicer Activity <span class="stat-interval">(per 15s)</span> <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Columns are grouped by mark/space twist: low-numbered slicers favor pre-emphasized (loud-space) signals, high-numbered favor de-emphasized (loud-mark). More active slicers indicates a stronger/cleaner signal.</span></span></h2>
+                <div id="waterfall-zones"></div>
+                <div id="waterfall-cols"></div>
+                <div id="waterfall"></div>
             </div>
         </section>
 

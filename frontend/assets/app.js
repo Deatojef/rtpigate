@@ -534,6 +534,16 @@
                         activeTooltip = textEl;
                     }
                 });
+
+                // hover (desktop): show via the same clamping logic so the
+                // tooltip is positioned within the viewport instead of clipping.
+                tip.addEventListener("mouseenter", function () {
+                    if (activeTooltip === textEl) return;
+                    positionTip(tip, textEl);
+                });
+                tip.addEventListener("mouseleave", function () {
+                    if (activeTooltip !== textEl) textEl.classList.remove("visible");
+                });
             })(tips[i]);
         }
 
@@ -1022,6 +1032,163 @@
         ctx.fill();
     }
 
+    // ---- Slicer waterfall heatmap ----
+
+    // Monochrome-green color scale (low -> high). Interpolates between fixed
+    // stops; t in [0, 1]. t === 0 (no packets) yields the darkest base color.
+    var WATERFALL_STOPS = [
+        [0x0a, 0x1a, 0x0a],   // base / empty
+        [0x1f, 0x5a, 0x1f],
+        [0x3f, 0xae, 0x3f],
+        [0xa5, 0xd6, 0xa7],   // brightest
+    ];
+
+    function lerpGreen(t) {
+        if (t <= 0) return "rgb(10,26,10)";
+        if (t >= 1) t = 1;
+        var span = WATERFALL_STOPS.length - 1;
+        var pos = t * span;
+        var i = Math.min(Math.floor(pos), span - 1);
+        var f = pos - i;
+        var a = WATERFALL_STOPS[i];
+        var b = WATERFALL_STOPS[i + 1];
+        var r = Math.round(a[0] + (b[0] - a[0]) * f);
+        var g = Math.round(a[1] + (b[1] - a[1]) * f);
+        var bl = Math.round(a[2] + (b[2] - a[2]) * f);
+        return "rgb(" + r + "," + g + "," + bl + ")";
+    }
+
+    var WATERFALL_ROWS = 10;
+
+    // Classify a slicer by its space-gain into a twist zone. gain < 1 attenuates
+    // the space tone (compensating loud space = pre-emphasis); gain > 1 boosts it
+    // (compensating loud mark = de-emphasis). Boundaries are heuristic.
+    function slicerZone(g) {
+        if (g < 0.8) return "preemph";
+        if (g < 1.25) return "flat";
+        return "deemph";
+    }
+
+    var ZONE_LABEL = { preemph: "pre-emph", flat: "flat", deemph: "de-emph" };
+    var ZONE_DESC = {
+        preemph: "favors pre-emphasized (loud-space) signals",
+        flat: "favors balanced (flat-audio) signals",
+        deemph: "favors de-emphasized (loud-mark) signals"
+    };
+
+    // Format a space-gain as a mark:space ratio. gain is the space multiplier, so
+    // mark:space = (1/gain):1, e.g. gain 0.5 -> "2.0:1", gain 4.0 -> "1:4.0".
+    function ratioLabel(g) {
+        var r = 1 / g;
+        return r >= 1 ? r.toFixed(1) + ":1" : "1:" + g.toFixed(1);
+    }
+
+    function drawWaterfall(telem) {
+        var group = document.getElementById("waterfall-group");
+        var grid = document.getElementById("waterfall");
+        var colsRow = document.getElementById("waterfall-cols");
+        if (!group || !grid || !telem) return;
+
+        var cols = telem.slicer_count || 0;
+        if (cols <= 0) return;
+        var gains = telem.slicer_gains || [];
+
+        // drive the CSS grid column count (inherited by the zone strip, header, grid)
+        group.style.setProperty("--slicer-cols", String(cols));
+
+        // (re)build the zone strip + header only when the column count changes.
+        // Header per slicer: mark:space ratio over the slicer index; the zone strip
+        // groups consecutive slicers sharing a twist zone into spanning segments.
+        if (colsRow.childElementCount !== cols + 1) {
+            var zonesRow = document.getElementById("waterfall-zones");
+
+            // --- zone strip ---
+            zonesRow.innerHTML = "";
+            var zspacer = document.createElement("div");
+            zspacer.className = "waterfall-colspacer";
+            zonesRow.appendChild(zspacer);
+            var seg = 0;
+            while (seg < cols) {
+                var zone = slicerZone(gains[seg] != null ? gains[seg] : 1);
+                var span = 1;
+                while (seg + span < cols && slicerZone(gains[seg + span] != null ? gains[seg + span] : 1) === zone) {
+                    span++;
+                }
+                var zoneEl = document.createElement("div");
+                zoneEl.className = "waterfall-zone zone-" + zone;
+                zoneEl.textContent = ZONE_LABEL[zone];
+                zoneEl.style.gridColumn = "span " + span;
+                zonesRow.appendChild(zoneEl);
+                seg += span;
+            }
+
+            // --- per-slicer header (ratio + index) ---
+            colsRow.innerHTML = "";
+            var spacer = document.createElement("div");
+            spacer.className = "waterfall-colspacer";
+            spacer.textContent = "time";
+            colsRow.appendChild(spacer);
+            for (var c = 0; c < cols; c++) {
+                var g = gains[c] != null ? gains[c] : 1;
+                var zoneC = slicerZone(g);
+                var col = document.createElement("div");
+                col.className = "waterfall-col";
+                var ratio = document.createElement("span");
+                ratio.className = "waterfall-col-ratio";
+                ratio.textContent = ratioLabel(g);
+                col.appendChild(ratio);
+                col.title = "Slicer " + c + " · gain " + g.toFixed(2) +
+                    " · mark:space " + ratioLabel(g) + " · " + ZONE_DESC[zoneC];
+                colsRow.appendChild(col);
+            }
+        }
+
+        // newest interval on top
+        var intervals = (telem.intervals || []).slice().reverse();
+
+        // global max across every cell for brightness scaling (>= 1)
+        var globalMax = 1;
+        for (var ii = 0; ii < intervals.length; ii++) {
+            var counts = intervals[ii].counts || [];
+            for (var jj = 0; jj < counts.length; jj++) {
+                if (counts[jj] > globalMax) globalMax = counts[jj];
+            }
+        }
+
+        // rebuild the heatmap: always WATERFALL_ROWS rows so the grid height is
+        // stable; rows beyond the available intervals render as empty (base color).
+        grid.innerHTML = "";
+        for (var row = 0; row < WATERFALL_ROWS; row++) {
+            var interval = intervals[row];
+            var rowCounts = interval ? (interval.counts || []) : null;
+            var rowTime = interval ? formatTime(interval.timestamp) : null;
+
+            // leading per-row timestamp label
+            var rowLabel = document.createElement("div");
+            rowLabel.className = "waterfall-rowlabel";
+            rowLabel.textContent = rowTime || "";
+            grid.appendChild(rowLabel);
+
+            for (var col = 0; col < cols; col++) {
+                var cell = document.createElement("div");
+                cell.className = "waterfall-cell";
+                var count = rowCounts ? (rowCounts[col] || 0) : 0;
+                var t = count / globalMax;
+                cell.style.backgroundColor = lerpGreen(t);
+                // show the count as a centered digit; pick text color for contrast
+                // against the green scale (light on dark cells, dark on bright).
+                if (count > 0) {
+                    cell.textContent = count;
+                    cell.style.color = t > 0.5 ? "#0a1a0a" : "#cfe8cf";
+                }
+                if (rowTime) {
+                    cell.title = "Slicer " + col + " · " + rowTime + " · " + count + " packet" + (count === 1 ? "" : "s");
+                }
+                grid.appendChild(cell);
+            }
+        }
+    }
+
     // ---- Raw packet tooltip ----
 
     var rawTip = document.createElement("span");
@@ -1335,6 +1502,11 @@
             ltAprsisDropped.textContent = (data.lifetime_packets_dropped || 0).toLocaleString();
             ltAprsisReconnects.textContent = (data.lifetime_reconnects || 0).toLocaleString();
             setStatus(aprsisStatus, "connected");
+        });
+
+        es.addEventListener("slicer_statistics", function (e) {
+            onMessage();
+            drawWaterfall(JSON.parse(e.data));
         });
 
         es.addEventListener("station_statistics", function (e) {

@@ -252,21 +252,18 @@ main {
     font-variant: normal;
     padding: 6px 10px;
     border-radius: 4px;
-    white-space: nowrap;
+    white-space: normal;
+    max-width: 280px;
     z-index: 100;
     box-shadow: 0 2px 6px rgba(0,0,0,0.4);
     pointer-events: none;
 }
 
+/* Shown (and viewport-clamped) by JS on both hover and click — see
+   setupTooltips(). Driving display from JS keeps the position logic in one
+   place so tooltips never clip past the window edge. */
 .info-tip .tip-text.visible {
     display: block;
-}
-
-/* Desktop hover — only on devices with a fine pointer (mouse) */
-@media (hover: hover) and (pointer: fine) {
-    .info-tip:hover .tip-text {
-        display: block;
-    }
 }
 
 /* Lifetime statistics row */
@@ -302,6 +299,122 @@ main {
     margin-top: 4px;
     border-radius: 3px;
     background-color: var(--spark-bg);
+}
+
+/* Left column: RF Packets stacked over APRS-IS */
+.stat-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 250px;
+}
+
+/* Right column: slicer-diversity waterfall heatmap. Stretches (default flex
+   align-items) to match the combined height of the left column. */
+#waterfall-group {
+    flex: 1;
+    min-width: 250px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Semantic zone strip grouping slicers by mark/space twist. Shares the same
+   leading time-label column + data columns as the header and grid below; each
+   zone segment spans its slicers via grid-column (set from JS). */
+#waterfall-zones {
+    display: grid;
+    grid-template-columns: var(--rowlabel-w, 3.6em) repeat(var(--slicer-cols, 8), 1fr);
+    gap: 1px;
+    margin-bottom: 1px;
+}
+
+.waterfall-zone {
+    text-align: center;
+    font-size: 0.82em;
+    font-weight: bold;
+    font-variant: small-caps;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    border-bottom: 3px solid var(--panel-border);
+    padding-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.waterfall-zone.zone-preemph { border-bottom-color: #6cc06c; color: #b6e6b6; }
+.waterfall-zone.zone-flat    { border-bottom-color: #8a8a8a; color: #d0d0d0; }
+.waterfall-zone.zone-deemph  { border-bottom-color: #d8b94a; color: #ecd58a; }
+
+/* Per-slicer column header: mark:space ratio over the slicer index. Both this
+   header and the grid below share a leading time-label column (--rowlabel-w) so
+   columns align. --slicer-cols is set from JS on #waterfall-group, inherited. */
+#waterfall-cols {
+    display: grid;
+    grid-template-columns: var(--rowlabel-w, 3.6em) repeat(var(--slicer-cols, 8), 1fr);
+    gap: 1px;
+    margin-bottom: 2px;
+}
+
+.waterfall-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.15;
+    padding: 1px 0;
+}
+
+.waterfall-col-ratio {
+    font-size: 0.92em;
+    font-weight: bold;
+    color: var(--text);
+}
+
+/* Empty spacer above the time-label column in the zone/header rows. */
+.waterfall-colspacer {
+    text-align: center;
+    font-size: 0.82em;
+    font-weight: bold;
+    color: var(--text-muted);
+    font-variant: small-caps;
+}
+
+/* The heatmap grid itself: a time-label column + --slicer-cols data columns,
+   rows auto-sized to fill the panel height so the column matches the left
+   column. */
+#waterfall {
+    flex: 1;
+    display: grid;
+    grid-template-columns: var(--rowlabel-w, 3.6em) repeat(var(--slicer-cols, 8), 1fr);
+    grid-auto-rows: 1fr;
+    gap: 1px;
+    min-height: 120px;
+    background-color: var(--panel-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+/* Per-row timestamp label on the left edge of the heatmap. */
+.waterfall-rowlabel {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 4px;
+    font-size: 0.65em;
+    color: var(--text-dim);
+    background-color: var(--panel-bg);
+    white-space: nowrap;
+}
+
+.waterfall-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 6px;
+    font-size: 0.7em;
+    font-weight: bold;
+    line-height: 1;
 }
 
 /* Packets section */
@@ -672,6 +785,11 @@ tr.rf-packet td.pkt-source a:hover {
     }
 
     .stat-group {
+        min-width: unset;
+    }
+
+    .stat-column,
+    #waterfall-group {
         min-width: unset;
     }
 

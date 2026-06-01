@@ -16,6 +16,7 @@ pub enum DataItem {
 pub enum AppTelemetry {
     PacketStatus(PacketTelemetry),
     AprsisStatus(AprsisTelemetry),
+    SlicerStatus(SlicerTelemetry),
     StationStatus(StationTelemetry),
 }
 
@@ -62,6 +63,27 @@ pub struct AprsisTelemetry {
     // before reaching the gating logic. Distinct from `packets_dropped` because
     // these never had a chance to be evaluated.
     pub lifetime_lagged_drops: u64,
+}
+
+// One 15-second snapshot of per-slicer packet counts for the slicer waterfall.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SlicerInterval {
+    pub timestamp: DateTime<Local>,
+    pub counts: Vec<u32>,           // length == slicer_count
+}
+
+// Slicer-diversity telemetry: a rolling window of per-slicer demodulation
+// counts. Each `SlicerInterval` is one heatmap row; `counts[i]` is how many
+// packets demodulator slicer `i` recovered during that 15s window.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SlicerTelemetry {
+    pub name: String,               // "slicer_statistics"
+    pub timestamp: DateTime<Local>,
+    pub microsecs: f64,
+    pub slicer_count: usize,        // number of heatmap columns (decoder config)
+    pub slicer_gains: Vec<f32>,     // per-slicer space-gain ladder (length slicer_count)
+    pub intervals: VecDeque<SlicerInterval>,   // last 10, oldest-first
+    pub lifetime_slicer_hits: Vec<u64>,        // per-slicer lifetime totals
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]

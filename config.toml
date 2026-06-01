@@ -63,7 +63,7 @@ threshold = 600
 # The [rtp] section specifies the hostname and port for listening to packets coming from the ka9q-radio backend.
 ###########################################
 [rtp]
-host = "ax25.local"
+host = "packet.local"
 port = 5004
 
 
