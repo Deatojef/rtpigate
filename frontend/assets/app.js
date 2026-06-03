@@ -573,6 +573,7 @@
             var isLight = document.body.classList.contains("light");
             btn.textContent = isLight ? "Dark" : "Light";
             localStorage.setItem("theme", isLight ? "light" : "dark");
+            refreshActivityChartTheme();
         });
     }
 
@@ -962,74 +963,268 @@
     }
 
 
-    // ---- Sparkline drawing ----
+    // ---- Packet Activity chart (Chart.js, dual-axis) ----
 
-    function drawSparkline(canvasId, series, color) {
-        var canvas = document.getElementById(canvasId);
-        if (!canvas || !series || !series.data || series.data.length < 2) return;
+    // Raw 15s statistic buckets keyed by floored epoch-second. Seeded from
+    // /api/history on load, then merged from the per-tick SSE telemetry events.
+    // The two events tick independently and write disjoint fields into the same
+    // ts-keyed bucket (counts vs. igating), mirroring the backend HistoryStore.
+    var activityBuckets = {};
+    var ACTIVITY_RETAIN_SECS = 24 * 60 * 60;
+    var BUCKET_SECS = 15;
 
-        var ctx = canvas.getContext("2d");
-        var w = canvas.width;
-        var h = canvas.height;
-        var data = series.data;
-        var len = data.length;
-        var padding = 2;
+    // Per-range display config. The button selects the x-axis *resolution*
+    // (`bucketSecs` = the spacing between points/bars); raw 15s buckets are
+    // aggregated up to that interval. `windowSecs` is how far back we show.
+    var RANGE_CONFIG = {
+        "1m":  { windowSecs: 60 * 60,     bucketSecs: 60 },          // 1-min points, last 60 min  (60 pts)
+        "1h":  { windowSecs: 24 * 3600,   bucketSecs: 3600 },        // 1-hour points, last 24 h   (24 pts)
+    };
+    var currentRange = "1h";
+    var activityChart = null;
 
-        // Find min/max for auto-scaling
-        var min = Infinity;
-        var max = -Infinity;
-        for (var i = 0; i < len; i++) {
-            var v = data[i].value;
-            if (v < min) min = v;
-            if (v > max) max = v;
+    // Series colors — fixed values chosen to read on both dark and light themes.
+    var COLOR_DIRECT = "#64b5f6";   // blue
+    var COLOR_TOTAL = "#a5d6a7";    // green
+    var COLOR_IGATED = "rgba(255, 193, 7, 0.28)"; // translucent amber bars
+
+    function floorBucket(epochSecs, size) {
+        return epochSecs - (epochSecs % size);
+    }
+
+    // Upsert one DataSeries (from a telemetry event) into activityBuckets, writing
+    // `field` on each ts-keyed bucket. Iterating the whole series self-heals any
+    // tick missed while no telemetry was flowing, just like the backend store.
+    function mergeSeriesIntoBuckets(series, field) {
+        if (!series || !series.data) return;
+        for (var i = 0; i < series.data.length; i++) {
+            var pt = series.data[i];
+            var ts = floorBucket(Math.floor(Date.parse(pt.timestamp) / 1000), BUCKET_SECS);
+            var b = activityBuckets[ts];
+            if (!b) {
+                b = { ts: ts, total: 0, direct: 0, digipeated: 0, errors: 0, igated: 0, dropped: 0, rf_received: 0, reconnects: 0 };
+                activityBuckets[ts] = b;
+            }
+            b[field] = pt.value;
         }
+    }
 
-        // If all values are the same, center the line
-        if (max === min) {
-            max = min + 1;
-        }
-
-        var rangeY = max - min;
-        var drawW = w - padding * 2;
-        var drawH = h - padding * 2;
-
-        ctx.clearRect(0, 0, w, h);
-
-        // Draw filled area
-        ctx.beginPath();
-        ctx.moveTo(padding, h - padding);
-        for (var j = 0; j < len; j++) {
-            var x = padding + (j / (len - 1)) * drawW;
-            var y = h - padding - ((data[j].value - min) / rangeY) * drawH;
-            ctx.lineTo(x, y);
-        }
-        ctx.lineTo(padding + drawW, h - padding);
-        ctx.closePath();
-        ctx.fillStyle = color + "33"; // 20% opacity fill
-        ctx.fill();
-
-        // Draw line
-        ctx.beginPath();
-        for (var k = 0; k < len; k++) {
-            var lx = padding + (k / (len - 1)) * drawW;
-            var ly = h - padding - ((data[k].value - min) / rangeY) * drawH;
-            if (k === 0) {
-                ctx.moveTo(lx, ly);
-            } else {
-                ctx.lineTo(lx, ly);
+    // Drop buckets older than the retention window.
+    function pruneActivityBuckets() {
+        var cutoff = floorBucket(Math.floor(Date.now() / 1000), BUCKET_SECS) - ACTIVITY_RETAIN_SECS;
+        for (var k in activityBuckets) {
+            if (activityBuckets.hasOwnProperty(k) && activityBuckets[k].ts < cutoff) {
+                delete activityBuckets[k];
             }
         }
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
+    }
 
-        // Draw dot on latest value
-        var lastX = padding + drawW;
-        var lastY = h - padding - ((data[len - 1].value - min) / rangeY) * drawH;
-        ctx.beginPath();
-        ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
+    // Seed activityBuckets from the backend's 24h history so longer ranges are
+    // populated immediately on load (and survive reloads).
+    function seedActivityHistory() {
+        return fetch("/api/history")
+            .then(function (r) { return r.ok ? r.json() : []; })
+            .then(function (buckets) {
+                if (!Array.isArray(buckets)) return;
+                for (var i = 0; i < buckets.length; i++) {
+                    var b = buckets[i];
+                    // backend StatBucket already carries floored ts + all fields
+                    activityBuckets[b.ts] = {
+                        ts: b.ts,
+                        total: b.total, direct: b.direct, digipeated: b.digipeated, errors: b.errors,
+                        igated: b.igated, dropped: b.dropped, rf_received: b.rf_received, reconnects: b.reconnects,
+                    };
+                }
+            })
+            .catch(function () { /* chart still works from live ticks */ });
+    }
+
+    function formatClock(epochSecs, withSeconds) {
+        var d = new Date(epochSecs * 1000);
+        var hh = String(d.getHours()).padStart(2, "0");
+        var mm = String(d.getMinutes()).padStart(2, "0");
+        if (withSeconds) {
+            return hh + ":" + mm + ":" + String(d.getSeconds()).padStart(2, "0");
+        }
+        return hh + ":" + mm;
+    }
+
+    // Aggregate raw 15s buckets into contiguous display buckets across the selected
+    // window (ending at the current wall-clock bucket). Empty display buckets render
+    // as zero counts and a null igated% (no bar). igated% = igated / rf_received.
+    function buildDisplaySeries(range) {
+        var cfg = RANGE_CONFIG[range] || RANGE_CONFIG["1h"];
+        var size = cfg.bucketSecs;
+        var count = Math.round(cfg.windowSecs / size);
+        var nowEnd = floorBucket(Math.floor(Date.now() / 1000), size);
+        var start = nowEnd - (count - 1) * size;
+
+        // accumulate raw buckets into display-bucket slots
+        var slots = {};
+        for (var k in activityBuckets) {
+            if (!activityBuckets.hasOwnProperty(k)) continue;
+            var rb = activityBuckets[k];
+            if (rb.ts < start) continue;
+            var slotKey = floorBucket(rb.ts, size);
+            var s = slots[slotKey];
+            if (!s) { s = { total: 0, direct: 0, igated: 0, rf: 0 }; slots[slotKey] = s; }
+            s.total += rb.total;
+            s.direct += rb.direct;
+            s.igated += rb.igated;
+            s.rf += rb.rf_received;
+        }
+
+        var labels = [], directArr = [], totalArr = [], pctArr = [];
+        for (var i = 0; i < count; i++) {
+            var bstart = start + i * size;
+            var s2 = slots[bstart];
+            labels.push(formatClock(bstart, false));
+            if (s2) {
+                directArr.push(s2.direct);
+                totalArr.push(s2.total);
+                pctArr.push(s2.rf > 0 ? Math.round((s2.igated / s2.rf) * 1000) / 10 : null);
+            } else {
+                directArr.push(0);
+                totalArr.push(0);
+                pctArr.push(null);
+            }
+        }
+        return { labels: labels, direct: directArr, total: totalArr, pct: pctArr };
+    }
+
+    function chartThemeColors() {
+        var cs = getComputedStyle(document.body);
+        var text = cs.getPropertyValue("--text-muted").trim() || "#cccccc";
+        var grid = cs.getPropertyValue("--panel-border").trim() || "#333333";
+        return { text: text, grid: grid };
+    }
+
+    function initActivityChart() {
+        if (typeof Chart === "undefined") return;
+        var canvas = document.getElementById("activity-chart");
+        if (!canvas) return;
+        var theme = chartThemeColors();
+        var d = buildDisplaySeries(currentRange);
+
+        activityChart = new Chart(canvas.getContext("2d"), {
+            type: "bar",
+            data: {
+                labels: d.labels,
+                // dataset index 0 (the bar) draws first, i.e. *behind* the lines
+                datasets: [
+                    {
+                        type: "bar",
+                        label: "Igated %",
+                        yAxisID: "pct",
+                        data: d.pct,
+                        backgroundColor: COLOR_IGATED,
+                        borderWidth: 0,
+                        categoryPercentage: 1.0,
+                        barPercentage: 1.0,
+                    },
+                    {
+                        type: "line",
+                        label: "Total",
+                        yAxisID: "count",
+                        data: d.total,
+                        borderColor: COLOR_TOTAL,
+                        backgroundColor: COLOR_TOTAL,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.25,
+                    },
+                    {
+                        type: "line",
+                        label: "Direct",
+                        yAxisID: "count",
+                        data: d.direct,
+                        borderColor: COLOR_DIRECT,
+                        backgroundColor: COLOR_DIRECT,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.25,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: "index", intersect: false },
+                scales: {
+                    x: {
+                        ticks: { color: theme.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+                        grid: { color: theme.grid, display: false },
+                    },
+                    count: {
+                        type: "linear",
+                        position: "left",
+                        beginAtZero: true,
+                        title: { display: true, text: "packets / interval", color: theme.text },
+                        ticks: { color: theme.text, precision: 0 },
+                        grid: { color: theme.grid },
+                    },
+                    pct: {
+                        type: "linear",
+                        position: "right",
+                        min: 0,
+                        max: 100,
+                        title: { display: true, text: "% igated", color: theme.text },
+                        ticks: { color: theme.text, callback: function (v) { return v + "%"; } },
+                        grid: { drawOnChartArea: false },
+                    },
+                },
+                plugins: {
+                    legend: { labels: { color: theme.text, boxWidth: 12 } },
+                    tooltip: {
+                        callbacks: {
+                            label: function (ctx) {
+                                var v = ctx.parsed.y;
+                                if (ctx.dataset.label === "Igated %") {
+                                    return "Igated %: " + (v == null ? "n/a" : v + "%");
+                                }
+                                return ctx.dataset.label + ": " + v;
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function updateActivityChart() {
+        if (!activityChart) return;
+        var d = buildDisplaySeries(currentRange);
+        activityChart.data.labels = d.labels;
+        activityChart.data.datasets[0].data = d.pct;
+        activityChart.data.datasets[1].data = d.total;
+        activityChart.data.datasets[2].data = d.direct;
+        activityChart.update("none");
+    }
+
+    function refreshActivityChartTheme() {
+        if (!activityChart) return;
+        var theme = chartThemeColors();
+        var sc = activityChart.options.scales;
+        sc.x.ticks.color = theme.text; sc.x.grid.color = theme.grid;
+        sc.count.ticks.color = theme.text; sc.count.grid.color = theme.grid; sc.count.title.color = theme.text;
+        sc.pct.ticks.color = theme.text; sc.pct.title.color = theme.text;
+        activityChart.options.plugins.legend.labels.color = theme.text;
+        activityChart.update("none");
+    }
+
+    function setupRangeSelector() {
+        var btns = document.querySelectorAll("#activity-ranges .range-btn");
+        for (var i = 0; i < btns.length; i++) {
+            (function (btn) {
+                btn.addEventListener("click", function () {
+                    for (var j = 0; j < btns.length; j++) btns[j].classList.remove("active");
+                    btn.classList.add("active");
+                    currentRange = btn.getAttribute("data-range");
+                    updateActivityChart();
+                });
+            })(btns[i]);
+        }
     }
 
     // ---- Slicer waterfall heatmap ----
@@ -1477,9 +1672,13 @@
             statRfDirect.textContent = latestValue(data.heard_direct);
             statRfDigipeated.textContent = latestValue(data.digipeated);
             statRfErrors.textContent = latestValue(data.decode_errors);
-            drawSparkline("spark-rf-direct", data.heard_direct, "#a5d6a7");
-            drawSparkline("spark-rf-digipeated", data.digipeated, "#fff176");
-            drawSparkline("spark-rf-errors", data.decode_errors, "#ef9a9a");
+            // merge the ka9q-side counts into the activity chart buffer
+            mergeSeriesIntoBuckets(data.total_packets, "total");
+            mergeSeriesIntoBuckets(data.heard_direct, "direct");
+            mergeSeriesIntoBuckets(data.digipeated, "digipeated");
+            mergeSeriesIntoBuckets(data.decode_errors, "errors");
+            pruneActivityBuckets();
+            updateActivityChart();
             // Lifetime counters
             ltRfDirect.textContent = (data.lifetime_heard_direct || 0).toLocaleString();
             ltRfDigipeated.textContent = (data.lifetime_digipeated || 0).toLocaleString();
@@ -1494,9 +1693,13 @@
             statAprsisIgated.textContent = latestValue(data.packets_igated);
             statAprsisDropped.textContent = latestValue(data.packets_dropped);
             statAprsisReconnects.textContent = latestValue(data.reconnects);
-            drawSparkline("spark-aprsis-igated", data.packets_igated, "#fff176");
-            drawSparkline("spark-aprsis-dropped", data.packets_dropped, "#ef9a9a");
-            drawSparkline("spark-aprsis-reconnects", data.reconnects, "#ce93d8");
+            // merge the APRS-IS-side counts into the activity chart buffer
+            mergeSeriesIntoBuckets(data.packets_igated, "igated");
+            mergeSeriesIntoBuckets(data.packets_dropped, "dropped");
+            mergeSeriesIntoBuckets(data.rf_received, "rf_received");
+            mergeSeriesIntoBuckets(data.reconnects, "reconnects");
+            pruneActivityBuckets();
+            updateActivityChart();
             // Lifetime counters
             ltAprsisIgated.textContent = (data.lifetime_packets_igated || 0).toLocaleString();
             ltAprsisDropped.textContent = (data.lifetime_packets_dropped || 0).toLocaleString();
@@ -1520,6 +1723,9 @@
     setupTooltips();
     setupThemeToggle();
     setupTabs();
+    setupRangeSelector();
+    initActivityChart();
+    seedActivityHistory().then(updateActivityChart);
     fetchConfig();
     fetchSatellitePackets();
     connectSSE();

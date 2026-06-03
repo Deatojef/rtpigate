@@ -1,5 +1,5 @@
 use tokio::sync::broadcast::{self};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio_util::sync::CancellationToken;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
@@ -8,6 +8,7 @@ use log::{info, warn, debug};
 
 use crate::config::{Config, AppTelemetry, DataItem};
 use crate::error::RtpigateError;
+use crate::history::HistoryStore;
 use crate::ka9q::Packet;
 
 
@@ -17,7 +18,7 @@ pub struct SSEEvent {
     pub data: serde_json::Value,
 }
 
-pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: broadcast::Sender<SSEEvent>, token: CancellationToken, _config: Arc<Config>) -> Result<(), RtpigateError> {
+pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: broadcast::Sender<SSEEvent>, token: CancellationToken, _config: Arc<Config>, history: Arc<RwLock<HistoryStore>>) -> Result<(), RtpigateError> {
 
     info!("Started");
 
@@ -48,6 +49,11 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                     Ok(DataItem::Tlm(telemetry)) => {
                         match telemetry {
                             AppTelemetry::PacketStatus(telem) => {
+                                // feed the rolling history store before forwarding
+                                if let Ok(mut store) = history.write() {
+                                    store.update_from_packet(&telem);
+                                    store.prune();
+                                }
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
                                 if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
@@ -55,6 +61,11 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                                 }
                             },
                             AppTelemetry::AprsisStatus(telem) => {
+                                // feed the rolling history store before forwarding
+                                if let Ok(mut store) = history.write() {
+                                    store.update_from_aprsis(&telem);
+                                    store.prune();
+                                }
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
                                 if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {

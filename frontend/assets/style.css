@@ -199,30 +199,6 @@ main {
     padding-bottom: 4px;
 }
 
-.stat-row {
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-}
-
-.stat-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
-
-.stat-label {
-    font-size: 0.8em;
-    color: var(--text-muted);
-    font-variant: small-caps;
-}
-
-.stat-value {
-    font-size: 1.3em;
-    font-weight: bold;
-    color: var(--text);
-}
-
 .stat-interval {
     font-variant: normal;
     font-size: 0.7em;
@@ -294,20 +270,63 @@ main {
     font-weight: bold;
 }
 
-.sparkline {
-    display: block;
-    margin-top: 4px;
-    border-radius: 3px;
-    background-color: var(--spark-bg);
-}
-
-/* Left column: RF Packets stacked over APRS-IS */
-.stat-column {
+/* Combined Packet Activity panel: a dual-axis Chart.js time-series. Laid out as a
+   flex column so the chart canvas grows to fill the panel and tracks the slicer
+   waterfall's height (both are flex children of #statistics, stretched equal). */
+#activity-group {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+}
+
+/* Sized wrapper for the chart canvas. Chart.js runs with
+   maintainAspectRatio:false, so the canvas fills this box; flex:1 lets it grow to
+   match the waterfall, and min-height keeps it usable when the panel is short. */
+#activity-chart-wrap {
+    position: relative;
     flex: 1;
-    min-width: 250px;
+    min-height: 90px;
+    margin-top: 2px;
+}
+
+#activity-chart-wrap canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+/* Range selector (1m / 1h / 6h / 24h) sits inline in the panel heading. */
+.range-selector {
+    float: right;
+    display: inline-flex;
+    gap: 4px;
+    font-variant: normal;
+}
+
+.range-btn {
+    background-color: var(--panel-bg);
+    color: var(--text-muted);
+    border: 1px solid var(--panel-border);
+    border-radius: 3px;
+    padding: 1px 7px;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.range-btn:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
+}
+
+.range-btn.active {
+    background-color: var(--panel-border);
+    color: var(--text);
+    font-weight: bold;
+}
+
+/* Compact current-interval / lifetime readouts under the chart preserve the
+   metrics the old RF Packets + APRS-IS panels used to show. */
+.activity-readout {
+    gap: 10px;
+    row-gap: 2px;
 }
 
 /* Right column: slicer-diversity waterfall heatmap. Stretches (default flex
@@ -389,7 +408,7 @@ main {
     grid-template-columns: var(--rowlabel-w, 3.6em) repeat(var(--slicer-cols, 8), 1fr);
     grid-auto-rows: 1fr;
     gap: 1px;
-    min-height: 120px;
+    min-height: 60px;
     background-color: var(--panel-border);
     border-radius: 3px;
     overflow: hidden;
@@ -788,7 +807,6 @@ tr.rf-packet td.pkt-source a:hover {
         min-width: unset;
     }
 
-    .stat-column,
     #waterfall-group {
         min-width: unset;
     }

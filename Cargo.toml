@@ -1,6 +1,6 @@
 [package]
 name = "rtpigate"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["Jeff Deaton"]
 description = "APRS iGate for KA9Q-Radio backend"
@@ -38,6 +38,7 @@ assets = [
     ["frontend/index.html", "usr/local/share/rtpigate/frontend/", "644"],
     ["frontend/assets/style.css", "usr/local/share/rtpigate/frontend/assets/", "644"],
     ["frontend/assets/app.js", "usr/local/share/rtpigate/frontend/assets/", "644"],
+    ["frontend/assets/vendor/**/*", "usr/local/share/rtpigate/frontend/assets/vendor/", "644"],
     ["frontend/assets/aprssymbols/**/*", "usr/local/share/rtpigate/frontend/assets/aprssymbols/", "644"],
     ["deploy/rtpigate.service", "lib/systemd/system/rtpigate.service", "644"],
 ]

@@ -31,6 +31,9 @@ use aprs_is::aprsis_task;
 
 mod igate;
 
+mod history;
+use history::{HistoryStore, StatBucket};
+
 mod sse;
 use sse::{sse_task, SSEEvent};
 
@@ -41,6 +44,7 @@ struct AppState {
     sse_channel: broadcast::Sender<SSEEvent>,
     public_config: Arc<RwLock<PublicConfig>>,
     sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>>,
+    history: Arc<RwLock<HistoryStore>>,
 }
 
 impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
@@ -58,6 +62,12 @@ impl FromRef<AppState> for Arc<RwLock<PublicConfig>> {
 impl FromRef<AppState> for Arc<RwLock<VecDeque<RTPPacket>>> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.sat_packet_log.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<RwLock<HistoryStore>> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.history.clone()
     }
 }
 
@@ -165,6 +175,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>> = Arc::new(RwLock::new(VecDeque::new()));
 
     //#################
+    // 24h rolling history of merged packet/igating statistics, written by sse_task
+    // and read by the /api/history HTTP handler.
+    //#################
+    let history_store: Arc<RwLock<HistoryStore>> = Arc::new(RwLock::new(HistoryStore::new()));
+
+    //#################
     // rtp_listener task
     //#################
     let rtp_tx_sender = data_tx.clone();
@@ -209,9 +225,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sse_channel_tx_sender = sse_tx.clone();
     let sse_config = Arc::clone(&shared_config);
     let sse_token = cancel_token.clone();
+    let sse_history = Arc::clone(&history_store);
 
     task_set.spawn(async move {
-        if let Err(e) = sse_task(sse_tx_sender, sse_channel_tx_sender, sse_token, sse_config).await {
+        if let Err(e) = sse_task(sse_tx_sender, sse_channel_tx_sender, sse_token, sse_config, sse_history).await {
             error!("Unable to create sse task: {}", e);
         }
     });
@@ -232,6 +249,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             sse_channel: sse_tx,
             public_config: shared_public_config.clone(),
             sat_packet_log: Arc::clone(&sat_packet_log),
+            history: Arc::clone(&history_store),
         };
 
         // resolve frontend assets path
@@ -247,6 +265,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .route("/api/sse", get(sse_handler))
             .route("/api/config", get(config_handler))
             .route("/api/satellite-packets", get(satellite_packets_handler))
+            .route("/api/history", get(history_handler))
             .nest_service("/assets", ServeDir::new(&assets_dir))
             .fallback_service(ServeDir::new(frontend_dir).append_index_html_on_directories(true))
             .with_state(app_state);
@@ -361,6 +380,18 @@ async fn satellite_packets_handler(
 ) -> Json<Vec<RTPPacket>> {
     let snapshot: Vec<RTPPacket> = match log.read() {
         Ok(guard) => guard.iter().rev().cloned().collect(),
+        Err(_) => Vec::new(),
+    };
+    Json(snapshot)
+}
+
+// history_handler - returns the 24h rolling history of merged packet/igating
+// statistics as 15s buckets, oldest-first, for seeding the activity chart on load.
+async fn history_handler(
+    State(history): State<Arc<RwLock<HistoryStore>>>,
+) -> Json<Vec<StatBucket>> {
+    let snapshot = match history.read() {
+        Ok(guard) => guard.snapshot(),
         Err(_) => Vec::new(),
     };
     Json(snapshot)

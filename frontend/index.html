@@ -29,60 +29,36 @@
         </section>
 
         <section id="statistics">
-            <div class="stat-column">
-            <div class="stat-group">
-                <h2>RF Packets <span class="stat-interval">(per 15s)</span></h2>
-                <div class="stat-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Direct <span class="info-tip">(?)<span class="tip-text">Packets heard directly from the source station</span></span></span>
-                        <span id="stat-rf-direct" class="stat-value">--</span>
-                        <canvas id="spark-rf-direct" class="sparkline" width="150" height="40"></canvas>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Digipeated <span class="info-tip">(?)<span class="tip-text">Packets received via one or more digipeaters</span></span></span>
-                        <span id="stat-rf-digipeated" class="stat-value">--</span>
-                        <canvas id="spark-rf-digipeated" class="sparkline" width="150" height="40"></canvas>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Errors <span class="info-tip">(?)<span class="tip-text">Packets that failed AX.25 or APRS decoding</span></span></span>
-                        <span id="stat-rf-errors" class="stat-value">--</span>
-                        <canvas id="spark-rf-errors" class="sparkline" width="150" height="40"></canvas>
-                    </div>
+            <div class="stat-group" id="activity-group">
+                <h2>Packet Activity
+                    <span class="info-tip">(?)<span class="tip-text">Per-interval direct and total packets heard (left axis, lines) with the percentage of received packets igated to APRS-IS (right axis, bars). Select a time range; updates every 15s.</span></span>
+                    <span id="activity-ranges" class="range-selector">
+                        <button type="button" class="range-btn" data-range="1m">1m</button>
+                        <button type="button" class="range-btn active" data-range="1h">1h</button>
+                    </span>
+                </h2>
+                <div id="activity-chart-wrap">
+                    <canvas id="activity-chart"></canvas>
                 </div>
-                <div class="stat-lifetime">
+                <div class="stat-lifetime activity-readout">
+                    <span class="lifetime-label">Now:</span>
+                    <span class="lifetime-item">Direct <span id="stat-rf-direct" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Digi <span id="stat-rf-digipeated" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Err <span id="stat-rf-errors" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Igated <span id="stat-aprsis-igated" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Dropped <span id="stat-aprsis-dropped" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Reconn <span id="stat-aprsis-reconnects" class="lifetime-value">--</span></span>
+                </div>
+                <div class="stat-lifetime activity-readout">
                     <span class="lifetime-label">Lifetime:</span>
                     <span class="lifetime-item">Direct <span id="lt-rf-direct" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Digipeated <span id="lt-rf-digipeated" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Errors <span id="lt-rf-errors" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Digi <span id="lt-rf-digipeated" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Err <span id="lt-rf-errors" class="lifetime-value">--</span></span>
                     <span class="lifetime-item">Total <span id="lt-rf-total" class="lifetime-value">--</span></span>
-                </div>
-            </div>
-            <div class="stat-group">
-                <h2>APRS-IS <span class="stat-interval">(per 15s)</span></h2>
-                <div class="stat-row">
-                    <div class="stat-item">
-                        <span class="stat-label">Igated <span class="info-tip">(?)<span class="tip-text">RF packets successfully forwarded to APRS-IS</span></span></span>
-                        <span id="stat-aprsis-igated" class="stat-value">--</span>
-                        <canvas id="spark-aprsis-igated" class="sparkline" width="150" height="40"></canvas>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Dropped <span class="info-tip">(?)<span class="tip-text">Filtered by igating rules (rfonly, stale, satellite, duplicate)</span></span></span>
-                        <span id="stat-aprsis-dropped" class="stat-value">--</span>
-                        <canvas id="spark-aprsis-dropped" class="sparkline" width="150" height="40"></canvas>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Reconnects <span class="info-tip">(?)<span class="tip-text">APRS-IS TCP reconnections in this interval</span></span></span>
-                        <span id="stat-aprsis-reconnects" class="stat-value">--</span>
-                        <canvas id="spark-aprsis-reconnects" class="sparkline" width="150" height="40"></canvas>
-                    </div>
-                </div>
-                <div class="stat-lifetime">
-                    <span class="lifetime-label">Lifetime:</span>
                     <span class="lifetime-item">Igated <span id="lt-aprsis-igated" class="lifetime-value">--</span></span>
                     <span class="lifetime-item">Dropped <span id="lt-aprsis-dropped" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Reconnects <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
+                    <span class="lifetime-item">Reconn <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
                 </div>
-            </div>
             </div>
             <div class="stat-group" id="waterfall-group">
                 <h2>Slicer Activity <span class="stat-interval">(per 15s)</span> <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Columns are grouped by mark/space twist: low-numbered slicers favor pre-emphasized (loud-space) signals, high-numbered favor de-emphasized (loud-mark). More active slicers indicates a stronger/cleaner signal.</span></span></h2>
@@ -146,6 +122,7 @@
         </section>
     </main>
 
+    <script src="/assets/vendor/chart.umd.min.js"></script>
     <script src="/assets/aprssymbols/symbols-map.js"></script>
     <script src="/assets/app.js"></script>
 </body>

@@ -26,5 +26,9 @@ target
 /target
 
 
-# ignore vendor directories
+# ignore vendor directories (e.g. the Rust vendored crate fork)
 vendor
+
+# ...but keep the frontend's vendored JS libraries (Chart.js) under version control
+!frontend/assets/vendor/
+!frontend/assets/vendor/**
