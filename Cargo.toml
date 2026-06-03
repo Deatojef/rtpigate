@@ -1,6 +1,6 @@
 [package]
 name = "rtpigate"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Jeff Deaton"]
 description = "APRS iGate for KA9Q-Radio backend"
@@ -20,6 +20,7 @@ tokio-util = "0.7.16"
 axum = { version = "0.8.4", features = ["json"] }
 tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
+#aprs-rtp = "0.1"
 aprs-rtp = "0.1"
 aprs-decode = "0.1"
 

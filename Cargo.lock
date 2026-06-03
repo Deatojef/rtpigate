@@ -31,9 +31,9 @@ dependencies = [
 
 [[package]]
 name = "aprs-rtp"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "917d1a2d50552b4c61f97823aa83ae0b46724bec1a15dd53b17280ee05dbd24e"
+checksum = "7b5a888953b0f4e854f08a79d1b5d66ab24c1f1cd0d20947db3dc57eaf347bf6"
 dependencies = [
  "bytes",
  "crc",
@@ -110,9 +110,9 @@ dependencies = [
 
 [[package]]
 name = "bitflags"
-version = "2.11.1"
+version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+checksum = "84d7ced0ae9557296835c32bf1b1e02b44c746701f898460fb000d7eaa84f00a"
 
 [[package]]
 name = "bumpalo"
@@ -421,9 +421,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.30"
+version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
 
 [[package]]
 name = "matchit"
@@ -581,7 +581,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rtpigate"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aprs-decode",
  "aprs-rtp",

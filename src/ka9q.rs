@@ -50,6 +50,15 @@ pub struct RTPPacket {
     pub raw: String,
     pub info: String,
 
+    // Raw info-field bytes exactly as received, byte-for-byte. `info` above is a
+    // lossy UTF-8 rendering suitable for display/dedup/SSE (browsers require valid
+    // UTF-8); `info_bytes` preserves the original 8-bit payload so igating forwards
+    // it verbatim instead of substituting U+FFFD replacement characters for bytes
+    // like a stuck transmitter's trailing 0xff. APRS-IS is an 8-bit, line-delimited
+    // byte stream, so this is the faithful representation to gate. Not serialised.
+    #[serde(skip)]
+    pub info_bytes: Vec<u8>,
+
     // viapath
     pub path: String,
 
@@ -132,6 +141,23 @@ impl RTPPacket {
         } else {
             format!("{}>{},{},qAO,{}:{}", self.source, self.destination, self.path, callsign, self.info)
         }
+    }
+
+    /// Byte-faithful form of the igate line for writing to APRS-IS. Identical to
+    /// `for_rxigate` for the (ASCII) header — source, destination, path and our
+    /// callsign are all 7-bit AX.25 callsigns — but appends the raw info bytes
+    /// verbatim rather than the lossy `info` String, so a packet's original 8-bit
+    /// payload is gated unchanged instead of being mangled into U+FFFD sequences.
+    /// The caller appends the `\r\n` line terminator.
+    pub fn for_rxigate_bytes(&self, callsign: &str) -> Vec<u8> {
+        let header = if self.path.is_empty() {
+            format!("{}>{},qAO,{}:", self.source, self.destination, callsign)
+        } else {
+            format!("{}>{},{},qAO,{}:", self.source, self.destination, self.path, callsign)
+        };
+        let mut out = header.into_bytes();
+        out.extend_from_slice(&self.info_bytes);
+        out
     }
 }
 
@@ -541,8 +567,10 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
     let receivetime = DateTime::<Local>::from(pkt.received_at);
     let received_instant = Instant::now();
 
-    // the information field as UTF-8 text (lossy for binary Mic-E/telemetry)
+    // the information field as UTF-8 text (lossy for binary Mic-E/telemetry),
+    // plus the original bytes kept verbatim for byte-faithful igating.
     let info = String::from_utf8_lossy(&pkt.info).to_string();
+    let info_bytes = pkt.info.clone();
 
     // viapath and filtered digipeater path (real callsigns only)
     let path = pkt.via.join(",");
@@ -616,6 +644,7 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
         received_instant,
         raw: pkt.text,
         info,
+        info_bytes,
         path,
         digipeater_path,
         hops,

@@ -437,15 +437,24 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                                 }
                                             }
 
-                                            // reform packet into a string suitable for xmitting to an APRS-IS server
-                                            let packet_text = p.for_rxigate(&callsign);
+                                            // reform packet into a byte string suitable for xmitting to an
+                                            // APRS-IS server. We build it byte-faithfully (raw info bytes,
+                                            // not the lossy UTF-8 String) so a packet's original 8-bit
+                                            // payload is gated unchanged rather than mangled into U+FFFD.
+                                            let mut packet_bytes = p.for_rxigate_bytes(&callsign);
 
                                             // Defense in depth — droppacket() already rejects fields
                                             // containing embedded CR/LF, but enforce again at the write
                                             // boundary so a future code path that bypasses gating cannot
                                             // smuggle a forged APRS-IS line over our authenticated session.
                                             // Trailing CR/LF is tolerated to match droppacket().
-                                            if packet_text.trim_end_matches(['\r', '\n']).bytes().any(|b| b == b'\r' || b == b'\n') {
+                                            let trimmed = {
+                                                let end = packet_bytes.iter()
+                                                    .rposition(|&b| b != b'\r' && b != b'\n')
+                                                    .map_or(0, |i| i + 1);
+                                                &packet_bytes[..end]
+                                            };
+                                            if trimmed.iter().any(|&b| b == b'\r' || b == b'\n') {
                                                 warn!("Refusing to write packet with embedded CR/LF: {}", p.raw);
                                                 dropped += 1;
                                                 packets_dropped += 1;
@@ -456,10 +465,12 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
                                             info!("Igating:  {}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
-                                            // write data to the socket (bounded timeout — a hung
-                                            // server can otherwise block this task indefinitely while
-                                            // RF packets pile up and lag out of the broadcast channel)
-                                            match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", packet_text).as_bytes())).await {
+                                            // append the line terminator and write to the socket (bounded
+                                            // timeout — a hung server can otherwise block this task
+                                            // indefinitely while RF packets pile up and lag out of the
+                                            // broadcast channel)
+                                            packet_bytes.extend_from_slice(b"\r\n");
+                                            match timeout(WRITE_TIMEOUT, write_half.write_all(&packet_bytes)).await {
                                                 Ok(Ok(())) => {},
                                                 Ok(Err(e)) => {
                                                     warn!("Write to APRS-IS failed: {}", e);
