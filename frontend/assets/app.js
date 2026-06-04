@@ -2,7 +2,7 @@
     "use strict";
 
     var MAX_PACKETS = 20;
-    var MAX_HEARD = 30;
+    var MAX_HEARD = 20;   // top-N rows shown in any Stations tab (keeps the panel compact)
     var packetBody = document.getElementById("packet-body");
 
     // Station location (fetched from /api/location)
@@ -71,7 +71,7 @@
     // ---- Station tabs ----
 
     function setupTabs() {
-        var tabs = document.querySelectorAll(".tab-btn");
+        var tabs = document.querySelectorAll("#station-tabs .tab-btn");
         for (var i = 0; i < tabs.length; i++) {
             (function (tab) {
                 tab.addEventListener("click", function () {
@@ -83,6 +83,40 @@
                     renderStations();
                 });
             })(tabs[i]);
+        }
+    }
+
+    // Left-panel tabs: switch between the Packet Activity chart and the Slicer
+    // Activity waterfall. Scoped to #left-tabs so it never touches the Stations
+    // tabs. On activation we re-fit each view: Chart.js needs a resize() after
+    // being display:none (the canvas had zero size), and the waterfall is redrawn
+    // from the cached telemetry so it isn't blank until the next 15s tick.
+    function setupPanelTabs() {
+        var btns = document.querySelectorAll("#left-tabs .panel-tab");
+        var activityPanel = document.getElementById("activity-group");
+        var waterfallPanel = document.getElementById("waterfall-group");
+        var ranges = document.getElementById("activity-ranges");
+        for (var i = 0; i < btns.length; i++) {
+            (function (btn) {
+                btn.addEventListener("click", function () {
+                    for (var j = 0; j < btns.length; j++) {
+                        btns[j].classList.remove("active");
+                    }
+                    btn.classList.add("active");
+                    var showActivity = btn.getAttribute("data-panel") === "activity";
+                    activityPanel.style.display = showActivity ? "" : "none";
+                    waterfallPanel.style.display = showActivity ? "none" : "";
+                    if (ranges) ranges.style.display = showActivity ? "" : "none";
+                    if (showActivity) {
+                        if (activityChart) {
+                            activityChart.resize();
+                            activityChart.update("none");
+                        }
+                    } else if (lastTelemetry) {
+                        drawWaterfall(lastTelemetry);
+                    }
+                });
+            })(btns[i]);
         }
     }
 
@@ -133,7 +167,7 @@
 
         if (activeTab === "top-talkers") {
             stations.sort(function (a, b) { return b.count - a.count; });
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Direct Count", "Indirect Count"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Direct Count", "Indirect Count"];
         } else if (activeTab === "most-distant") {
             stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
             if (stationLat !== null && stationLon !== null) {
@@ -141,7 +175,7 @@
                 stations.sort(function (a, b) { return b._dist - a._dist; });
             }
             showDistance = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Path", "Hops", "Distance"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Path", "Hops", "Distance"];
         } else if (activeTab === "nearest") {
             stations = stations.filter(function (s) { return s.latitude != null && s.longitude != null; });
             if (stationLat !== null && stationLon !== null) {
@@ -149,12 +183,12 @@
                 stations.sort(function (a, b) { return a._dist - b._dist; });
             }
             showDistance = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Position", "Path", "Hops", "Distance"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Path", "Hops", "Distance"];
         } else if (activeTab === "highest-alt") {
             stations = stations.filter(function (s) { return s.altitude_ft != null; });
             stations.sort(function (a, b) { return b.altitude_ft - a.altitude_ft; });
             showAltitude = true;
-            headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Position", "Path", "Hops"];
+            headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Path", "Hops"];
         }
 
         // Update table headers
@@ -230,22 +264,6 @@
                 tdAlt.textContent = s.altitude_ft != null ? Math.round(s.altitude_ft).toLocaleString() + " ft" : "--";
                 tr.appendChild(tdAlt);
 
-                // Position
-                var tdPos = document.createElement("td");
-                tdPos.className = "heard-coords";
-                if (s.latitude != null && s.longitude != null) {
-                    var link = document.createElement("a");
-                    link.href = mapUrl(s.latitude, s.longitude, s.callsign);
-                    link.target = "_blank";
-                    link.rel = "noopener";
-                    link.className = "coord-link";
-                    link.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
-                    tdPos.appendChild(link);
-                } else {
-                    tdPos.textContent = "--";
-                }
-                tr.appendChild(tdPos);
-
                 // Path (from max altitude packet)
                 var tdAltPath = document.createElement("td");
                 tdAltPath.className = "heard-path";
@@ -258,22 +276,6 @@
                 tdAltHops.textContent = s.altitude_hops != null ? s.altitude_hops : "0";
                 tr.appendChild(tdAltHops);
             } else if (showDistance) {
-                // Position
-                var tdCoords = document.createElement("td");
-                tdCoords.className = "heard-coords";
-                if (s.latitude != null && s.longitude != null) {
-                    var cLink = document.createElement("a");
-                    cLink.href = mapUrl(s.latitude, s.longitude, s.callsign);
-                    cLink.target = "_blank";
-                    cLink.rel = "noopener";
-                    cLink.className = "coord-link";
-                    cLink.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
-                    tdCoords.appendChild(cLink);
-                } else {
-                    tdCoords.textContent = "--";
-                }
-                tr.appendChild(tdCoords);
-
                 // Path (from position-setting packet)
                 var tdPosPath = document.createElement("td");
                 tdPosPath.className = "heard-path";
@@ -291,29 +293,6 @@
                 tdDist.textContent = s._dist != null ? Math.round(s._dist) + " mi" : "--";
                 tr.appendChild(tdDist);
             } else {
-                // Position with distance inline
-                var tdCoords2 = document.createElement("td");
-                tdCoords2.className = "heard-coords";
-                if (s.latitude != null && s.longitude != null) {
-                    var cLink2 = document.createElement("a");
-                    cLink2.href = mapUrl(s.latitude, s.longitude, s.callsign);
-                    cLink2.target = "_blank";
-                    cLink2.rel = "noopener";
-                    cLink2.className = "coord-link";
-                    cLink2.textContent = s.latitude.toFixed(6) + ", " + s.longitude.toFixed(6);
-                    tdCoords2.appendChild(cLink2);
-                    if (stationLat !== null && stationLon !== null) {
-                        var dist = haversineDistance(stationLat, stationLon, s.latitude, s.longitude);
-                        var distSpan = document.createElement("span");
-                        distSpan.className = "pkt-distance";
-                        distSpan.textContent = " (" + Math.round(dist) + "mi)";
-                        tdCoords2.appendChild(distSpan);
-                    }
-                } else {
-                    tdCoords2.textContent = "--";
-                }
-                tr.appendChild(tdCoords2);
-
                 // Direct Count / Indirect Count
                 var tdDirect = document.createElement("td");
                 tdDirect.textContent = s.count_direct.toLocaleString();
@@ -338,7 +317,8 @@
         freqs.sort(function (a, b) { return b.count - a.count; });
         var maxCount = freqs[0].count;
 
-        for (var i = 0; i < freqs.length; i++) {
+        var freqCount = Math.min(freqs.length, MAX_HEARD);
+        for (var i = 0; i < freqCount; i++) {
             var row = document.createElement("div");
             row.className = "freq-row";
 
@@ -369,7 +349,7 @@
         pruneSatPackets();
 
         var headers = ["", "Callsign", "Time", "Igate", "Altitude (ft)",
-                       "Position", "Path", "Hops", "Distance"];
+                       "Path", "Hops", "Distance"];
 
         heardThead.innerHTML = "";
         var headerRow = document.createElement("tr");
@@ -393,7 +373,8 @@
             return;
         }
 
-        for (var i = 0; i < satPackets.length; i++) {
+        var satCount = Math.min(satPackets.length, MAX_HEARD);
+        for (var i = 0; i < satCount; i++) {
             var p = satPackets[i];
             var tr = document.createElement("tr");
 
@@ -449,22 +430,6 @@
                 ? Math.round(p.altitude_ft).toLocaleString() + " ft"
                 : "--";
             tr.appendChild(tdAlt);
-
-            // Position
-            var tdPos = document.createElement("td");
-            tdPos.className = "heard-coords";
-            if (p.latitude != null && p.longitude != null) {
-                var posLink = document.createElement("a");
-                posLink.href = mapUrl(p.latitude, p.longitude, displaySource);
-                posLink.target = "_blank";
-                posLink.rel = "noopener";
-                posLink.className = "coord-link";
-                posLink.textContent = p.latitude.toFixed(6) + ", " + p.longitude.toFixed(6);
-                tdPos.appendChild(posLink);
-            } else {
-                tdPos.textContent = "--";
-            }
-            tr.appendChild(tdPos);
 
             // Path
             var tdPath = document.createElement("td");
@@ -982,6 +947,9 @@
     };
     var currentRange = "1h";
     var activityChart = null;
+    // Most recent slicer telemetry, cached so the waterfall can be redrawn on
+    // demand (e.g. when its tab is activated) without waiting for the next tick.
+    var lastTelemetry = null;
 
     // Series colors — fixed values chosen to read on both dark and light themes.
     var COLOR_DIRECT = "#64b5f6";   // blue
@@ -1709,7 +1677,8 @@
 
         es.addEventListener("slicer_statistics", function (e) {
             onMessage();
-            drawWaterfall(JSON.parse(e.data));
+            lastTelemetry = JSON.parse(e.data);
+            drawWaterfall(lastTelemetry);
         });
 
         es.addEventListener("station_statistics", function (e) {
@@ -1723,6 +1692,7 @@
     setupTooltips();
     setupThemeToggle();
     setupTabs();
+    setupPanelTabs();
     setupRangeSelector();
     initActivityChart();
     seedActivityHistory().then(updateActivityChart);

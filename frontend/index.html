@@ -29,42 +29,79 @@
         </section>
 
         <section id="statistics">
-            <div class="stat-group" id="activity-group">
-                <h2>Packet Activity
-                    <span class="info-tip">(?)<span class="tip-text">Per-interval direct and total packets heard (left axis, lines) with the percentage of received packets igated to APRS-IS (right axis, bars). Select a time range; updates every 15s.</span></span>
+            <div class="stat-group" id="left-panel">
+                <h2>Statistics</h2>
+                <div id="left-panel-header">
+                    <div id="left-tabs">
+                        <button class="panel-tab active" data-panel="activity">Packet Activity
+                            <span class="info-tip">(?)<span class="tip-text">Per-interval direct and total packets heard (left axis, lines) with the percentage of received packets igated to APRS-IS (right axis, bars). Select a time range; updates every 15s.</span></span>
+                        </button>
+                        <button class="panel-tab" data-panel="waterfall">AFSK Demod Slicers
+                            <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Columns are grouped by mark/space twist: low-numbered slicers favor pre-emphasized (loud-space) signals, high-numbered favor de-emphasized (loud-mark). More active slicers indicates a stronger/cleaner signal.</span></span>
+                        </button>
+                    </div>
                     <span id="activity-ranges" class="range-selector">
                         <button type="button" class="range-btn" data-range="1m">1m</button>
                         <button type="button" class="range-btn active" data-range="1h">1h</button>
                     </span>
-                </h2>
-                <div id="activity-chart-wrap">
-                    <canvas id="activity-chart"></canvas>
                 </div>
-                <div class="stat-lifetime activity-readout">
-                    <span class="lifetime-label">Now:</span>
-                    <span class="lifetime-item">Direct <span id="stat-rf-direct" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Digi <span id="stat-rf-digipeated" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Err <span id="stat-rf-errors" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Igated <span id="stat-aprsis-igated" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Dropped <span id="stat-aprsis-dropped" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Reconn <span id="stat-aprsis-reconnects" class="lifetime-value">--</span></span>
+                <div class="panel-content" id="activity-group">
+                    <div id="activity-chart-wrap">
+                        <canvas id="activity-chart"></canvas>
+                    </div>
+                    <div class="stat-lifetime activity-readout">
+                        <span class="lifetime-label">Now:</span>
+                        <span class="lifetime-item">Direct <span id="stat-rf-direct" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Digi <span id="stat-rf-digipeated" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Err <span id="stat-rf-errors" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Igated <span id="stat-aprsis-igated" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Dropped <span id="stat-aprsis-dropped" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Reconn <span id="stat-aprsis-reconnects" class="lifetime-value">--</span></span>
+                    </div>
+                    <div class="stat-lifetime activity-readout">
+                        <span class="lifetime-label">Lifetime:</span>
+                        <span class="lifetime-item">Direct <span id="lt-rf-direct" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Digi <span id="lt-rf-digipeated" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Err <span id="lt-rf-errors" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Total <span id="lt-rf-total" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Igated <span id="lt-aprsis-igated" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Dropped <span id="lt-aprsis-dropped" class="lifetime-value">--</span></span>
+                        <span class="lifetime-item">Reconn <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
+                    </div>
                 </div>
-                <div class="stat-lifetime activity-readout">
-                    <span class="lifetime-label">Lifetime:</span>
-                    <span class="lifetime-item">Direct <span id="lt-rf-direct" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Digi <span id="lt-rf-digipeated" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Err <span id="lt-rf-errors" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Total <span id="lt-rf-total" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Igated <span id="lt-aprsis-igated" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Dropped <span id="lt-aprsis-dropped" class="lifetime-value">--</span></span>
-                    <span class="lifetime-item">Reconn <span id="lt-aprsis-reconnects" class="lifetime-value">--</span></span>
+                <div class="panel-content" id="waterfall-group" style="display:none;">
+                    <div id="waterfall-zones"></div>
+                    <div id="waterfall-cols"></div>
+                    <div id="waterfall"></div>
                 </div>
             </div>
-            <div class="stat-group" id="waterfall-group">
-                <h2>Slicer Activity <span class="stat-interval">(per 15s)</span> <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Columns are grouped by mark/space twist: low-numbered slicers favor pre-emphasized (loud-space) signals, high-numbered favor de-emphasized (loud-mark). More active slicers indicates a stronger/cleaner signal.</span></span></h2>
-                <div id="waterfall-zones"></div>
-                <div id="waterfall-cols"></div>
-                <div id="waterfall"></div>
+            <div class="stat-group" id="last-heard">
+                <h2>Station Lists</h2>
+                <div id="station-tabs">
+                    <button class="tab-btn active" data-tab="top-talkers">Top Talkers</button>
+                    <button class="tab-btn" data-tab="most-distant">Most Distant</button>
+                    <button class="tab-btn" data-tab="nearest">Nearest</button>
+                    <button class="tab-btn" data-tab="highest-alt">Highest Altitude</button>
+                    <button class="tab-btn" data-tab="satellites">Satellites</button>
+                    <button class="tab-btn" data-tab="frequencies">Frequencies</button>
+                </div>
+                <div id="heard-content">
+                    <table id="heard-table">
+                        <thead id="heard-thead">
+                            <tr>
+                                <th></th>
+                                <th>Callsign</th>
+                                <th>Last Heard</th>
+                                <th>Freq</th>
+                                <th>Position</th>
+                                <th>Count</th>
+                            </tr>
+                        </thead>
+                        <tbody id="heard-body">
+                        </tbody>
+                    </table>
+                    <div id="freq-chart" style="display:none;"></div>
+                </div>
             </div>
         </section>
 
@@ -89,35 +126,6 @@
                     <tbody id="packet-body">
                     </tbody>
                 </table>
-            </div>
-        </section>
-
-        <section id="last-heard">
-            <h2>Stations</h2>
-            <div id="station-tabs">
-                <button class="tab-btn active" data-tab="top-talkers">Top Talkers</button>
-                <button class="tab-btn" data-tab="most-distant">Most Distant</button>
-                <button class="tab-btn" data-tab="nearest">Nearest</button>
-                <button class="tab-btn" data-tab="highest-alt">Highest Altitude</button>
-                <button class="tab-btn" data-tab="satellites">Satellites</button>
-                <button class="tab-btn" data-tab="frequencies">Frequencies</button>
-            </div>
-            <div id="heard-content">
-                <table id="heard-table">
-                    <thead id="heard-thead">
-                        <tr>
-                            <th></th>
-                            <th>Callsign</th>
-                            <th>Last Heard</th>
-                            <th>Freq</th>
-                            <th>Position</th>
-                            <th>Count</th>
-                        </tr>
-                    </thead>
-                    <tbody id="heard-body">
-                    </tbody>
-                </table>
-                <div id="freq-chart" style="display:none;"></div>
             </div>
         </section>
     </main>

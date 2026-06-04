@@ -5,7 +5,7 @@
     --panel-border: #505050;
     --text: #ffffff;
     --text-muted: #aaa;
-    --text-dim: #777;
+    --text-dim: #aaa;
     --text-secondary: #c8c8c8;
     --spark-bg: #252525;
     --row-border: #404040;
@@ -159,7 +159,7 @@ main {
 
 .config-label {
     color: var(--text-muted);
-    font-size: 0.85em;
+    font-size: 1em;
     font-variant: small-caps;
 }
 
@@ -250,7 +250,8 @@ main {
     display: flex;
     gap: 16px;
     flex-wrap: wrap;
-    font-size: 0.8em;
+    /*font-size: 0.8em;*/
+    font-size: 1em;
     color: var(--text-muted);
 }
 
@@ -270,12 +271,40 @@ main {
     font-weight: bold;
 }
 
-/* Combined Packet Activity panel: a dual-axis Chart.js time-series. Laid out as a
-   flex column so the chart canvas grows to fill the panel and tracks the slicer
-   waterfall's height (both are flex children of #statistics, stretched equal). */
-#activity-group {
+/* Tabbed left panel hosting the Packet Activity chart and the Slicer Activity
+   waterfall as switchable tabs. Laid out as a flex column so the active
+   .panel-content grows to fill the panel and tracks the Stations panel's height
+   (both are flex children of #statistics, stretched equal). */
+#left-panel {
     display: flex;
     flex-direction: column;
+}
+
+/* Shared header row: tab buttons on the left, the chart range selector on the
+   right. Mirrors the .stat-group h2 bottom border so the panel keeps its frame. */
+#left-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 4px;
+}
+
+#left-tabs {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+/* Each tab's content fills the panel below the header; only the active one is
+   shown (toggled via inline display by setupPanelTabs()). */
+.panel-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 
 /* Sized wrapper for the chart canvas. Chart.js runs with
@@ -293,12 +322,13 @@ main {
     height: 100% !important;
 }
 
-/* Range selector (1m / 1h / 6h / 24h) sits inline in the panel heading. */
+/* Range selector (1m / 1h / 6h / 24h) sits in the left-panel header, positioned
+   to the right by the header's space-between (no float needed). */
 .range-selector {
-    float: right;
     display: inline-flex;
     gap: 4px;
     font-variant: normal;
+    flex-shrink: 0;
 }
 
 .range-btn {
@@ -329,11 +359,9 @@ main {
     row-gap: 2px;
 }
 
-/* Right column: slicer-diversity waterfall heatmap. Stretches (default flex
-   align-items) to match the combined height of the left column. */
+/* Slicer-diversity waterfall heatmap, shown as the "Slicer Activity" tab of the
+   left panel. The .panel-content rule supplies flex:1 so it fills the panel. */
 #waterfall-group {
-    flex: 1;
-    min-width: 250px;
     display: flex;
     flex-direction: column;
 }
@@ -600,11 +628,24 @@ tr.rf-packet td.pkt-source a:hover {
     text-decoration: underline;
 }
 
-/* Last heard / Stations panel */
+/* Last heard / Stations panel. Now the right child of the #statistics row (a
+   .stat-group, so it inherits flex:1 + the panel chrome). Flex column so the
+   table area can scroll internally instead of stretching the row. */
 #last-heard {
     background-color: var(--panel-bg);
     padding: 8px 12px;
     border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Scroll the station table within the panel: vertically for long lists,
+   horizontally so wide tables don't spill past the browser edge. */
+#heard-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: auto;
+    min-height: 0;
 }
 
 #last-heard h2 {
@@ -624,7 +665,8 @@ tr.rf-packet td.pkt-source a:hover {
     flex-wrap: wrap;
 }
 
-.tab-btn {
+.tab-btn,
+.panel-tab {
     font-family: inherit;
     font-size: 0.8em;
     padding: 4px 10px;
@@ -635,12 +677,14 @@ tr.rf-packet td.pkt-source a:hover {
     cursor: pointer;
 }
 
-.tab-btn:hover {
+.tab-btn:hover,
+.panel-tab:hover {
     color: var(--text);
     border-color: var(--text-muted);
 }
 
-.tab-btn.active {
+.tab-btn.active,
+.panel-tab.active {
     background-color: var(--highlight);
     color: #fff;
     border-color: var(--highlight);
@@ -807,23 +851,21 @@ tr.rf-packet td.pkt-source a:hover {
         min-width: unset;
     }
 
-    #waterfall-group {
-        min-width: unset;
-    }
-
     /* Tabs scroll on mobile */
-    #station-tabs {
+    #station-tabs,
+    #left-tabs {
         overflow-x: auto;
         flex-wrap: nowrap;
     }
 
-    .tab-btn {
+    .tab-btn,
+    .panel-tab {
         white-space: nowrap;
         flex-shrink: 0;
     }
 
-    #heard-table th:nth-child(5),
-    #heard-table td:nth-child(5) {
-        display: none;
+    /* Cap the stacked Stations table so it doesn't dominate the column. */
+    #heard-content {
+        max-height: 50vh;
     }
 }
