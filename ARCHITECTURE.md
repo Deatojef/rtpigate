@@ -35,6 +35,7 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
   - **DataItem channel** (capacity 128): carries `DataItem::Pkt(Packet)` and `DataItem::Tlm(AppTelemetry)` from producers to consumers.
   - **SSEEvent channel** (capacity 128): carries serialized JSON events to browser connections.
 - Creates a 24-hour rolling **satellite packet log** (`Arc<RwLock<VecDeque<RTPPacket>>>`) shared between the RTP listener (writer) and the `/api/satellite-packets` handler (reader).
+- Creates a 24-hour rolling **statistics history store** (`Arc<RwLock<HistoryStore>>`, `history.rs`) shared between `sse_task` (writer — merges the `packet_statistics` and `aprsis_statistics` telemetry into 15s buckets keyed by timestamp) and the `/api/history` handler (reader). This is in-memory only and is rebuilt live after a restart.
 - Spawns async tasks into a `JoinSet`:
   1. `rtp_listener` (always)
   2. `aprsis_task` (only if `[aprsis] enabled = true`)
@@ -44,6 +45,7 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
   - `GET /api/sse` — SSE stream endpoint
   - `GET /api/config` — sanitized public config as JSON (no passcode)
   - `GET /api/satellite-packets` — 24h satellite packet log, newest-first
+  - `GET /api/history` — 24h rolling per-interval packet/igating statistics (15s buckets), oldest-first; seeds the activity chart on load
   - `/assets/*` — static frontend assets (`ServeDir`)
   - fallback — `ServeDir` serving `index.html` and the frontend root
 - **SIGHUP** reloads and re-validates the config, updates the shared `PublicConfig`, and pushes a `config` SSE event to connected browsers. (Changes to RTP/APRS-IS host/port still need a restart.)

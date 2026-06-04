@@ -234,8 +234,6 @@ Add to your Apache virtual host config (e.g., `/etc/apache2/sites-available/aprs
     SSLCertificateKeyFile /path/to/key.pem
 
     ProxyPreserveHost On
-    ProxyPass / http://127.0.0.1:3000/
-    ProxyPassReverse / http://127.0.0.1:3000/
 
     # SSE requires these to prevent buffering
     ProxyTimeout 3600
@@ -247,6 +245,19 @@ Add to your Apache virtual host config (e.g., `/etc/apache2/sites-available/aprs
         Header set Cache-Control "no-cache"
         Header set X-Accel-Buffering "no"
     </Location>
+
+    # Proxy the WHOLE /api/ prefix so every backend endpoint is reachable
+    # (/api/config, /api/history, /api/satellite-packets, and any added later).
+    # Do NOT enumerate individual /api/* paths — a missing one silently 404s
+    # at the proxy (e.g. an un-proxied /api/history leaves the activity chart
+    # with no historical data).
+    ProxyPass /api/ http://127.0.0.1:3000/api/
+    ProxyPassReverse /api/ http://127.0.0.1:3000/api/
+
+    # Static dashboard (served by the backend). Omit these two lines if you
+    # serve the frontend files from this vhost's DocumentRoot instead.
+    ProxyPass / http://127.0.0.1:3000/
+    ProxyPassReverse / http://127.0.0.1:3000/
 </VirtualHost>
 ```
 
@@ -254,6 +265,13 @@ Add to your Apache virtual host config (e.g., `/etc/apache2/sites-available/aprs
 sudo a2ensite aprs.conf
 sudo systemctl reload apache2
 ```
+
+> **Proxy the entire `/api/` prefix, not individual endpoints.** rtpigate exposes
+> `/api/sse`, `/api/config`, `/api/history`, and `/api/satellite-packets`. If your
+> proxy lists specific paths instead of the `/api/` prefix (or a catch-all `/`),
+> any endpoint you forget will 404 at the proxy while the rest keep working —
+> a missing `/api/history`, for example, lets live data through but shows no
+> chart history.
 
 ### nginx
 
