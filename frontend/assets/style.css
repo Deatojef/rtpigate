@@ -199,6 +199,9 @@ main {
        scroll instead. Stays compact when content is short. Lifted on mobile,
        where the panels stack and #heard-content uses its own max-height. */
     max-height: 40vh;
+    /* Floor the panels at 30% of the viewport so they don't collapse too far
+       when there's little content (e.g. a short station list at startup). */
+    min-height: 30vh;
 }
 
 .stat-group h2 {
@@ -923,8 +926,10 @@ tr.rf-packet td.pkt-source a:hover {
     .stat-group {
         min-width: unset;
         /* Stacked, each panel can size naturally; #heard-content below has its
-           own max-height to keep the table from dominating the column. */
+           own max-height to keep the table from dominating the column. The 30vh
+           desktop floor is lifted too so stacked panels don't leave dead space. */
         max-height: none;
+        min-height: 0;
     }
 
     /* Tabs scroll on mobile */
