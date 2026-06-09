@@ -13,24 +13,55 @@ use crate::config::{Config, AppTelemetry, PacketTelemetry, SlicerTelemetry, Slic
 use crate::error::RtpigateError;
 
 // Per-slicer space-gain ladder, replicating aprs-rtp's `afsk::slicer::space_gains`
-// (which is crate-private). Each slicer applies `demod_out = mark - space * gain`,
-// so `gain < 1` favors loud-space (pre-emphasized) signals and `gain > 1` favors
-// loud-mark (de-emphasized) signals. The ladder is a geometric progression from
-// `min_g` to `max_g` over `n` rungs; a single slicer uses unity gain. Kept in sync
-// with the DecoderConfig we pass to the listener so the frontend labels stay truthful.
-fn space_gains(n: usize, min_g: f32, max_g: f32) -> Vec<f32> {
+// (which is `pub(crate)`, so not importable). Each slicer applies
+// `demod_out = mark - space * gain`, so `gain < 1` favors loud-space
+// (pre-emphasized) signals and `gain > 1` favors loud-mark (de-emphasized).
+// As of aprs-rtp 0.2.0 the ladder is parameterized in **twist dB**: `n` rungs
+// spread evenly across `[min_db, max_db]` (uniform in dB == geometric in linear
+// gain), each rung's linear gain being `twist_db_to_gain(db) = 10^(db/20)`. A
+// single slicer uses unity gain (0 dB). Kept in sync with the DecoderConfig we
+// pass to the listener so the frontend labels stay truthful.
+fn twist_db_to_gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
+
+fn space_gains(n: usize, min_db: f32, max_db: f32) -> Vec<f32> {
     if n == 0 {
         return Vec::new();
     }
     if n == 1 {
         return vec![1.0];
     }
-    let step = (max_g / min_g).powf(1.0 / (n - 1) as f32);
-    let mut gains = vec![min_g];
-    for i in 1..n {
-        gains.push(gains[i - 1] * step);
-    }
-    gains
+    let step_db = (max_db - min_db) / (n - 1) as f32;
+    (0..n)
+        .map(|i| twist_db_to_gain(min_db + i as f32 * step_db))
+        .collect()
+}
+
+// Classify a slicer's space-gain into a twist zone, mirroring the frontend's
+// slicerZone(): gain < 0.8 compensates a loud space (pre-emphasis), gain > 1.25
+// compensates a loud mark (de-emphasis); in between is treated as flat.
+// 0 = pre-emph, 1 = flat, 2 = de-emph.
+fn slicer_zone(g: f32) -> u8 {
+    if g < 0.8 { 0 } else if g < 1.25 { 1 } else { 2 }
+}
+
+// Per-packet "twist" summary feeding the Recent Packets twist bar. Twist is the
+// mark/space amplitude imbalance the frame arrived with; it's inferred from which
+// slicers in the gain ladder decoded the frame (low-gain slicers favor loud-space
+// / pre-emphasized signals, high-gain favor loud-mark / de-emphasized). The
+// frontend draws `cols` cells, lights the ones set in `mask`, and colors each by
+// `zones`. Computed backend-side because the gain ladder lives here, so the bar
+// needs no slicer-telemetry to render.
+#[derive(Debug, Clone, Serialize)]
+pub struct TwistInfo {
+    pub cols: usize,      // bar width = number of slicers in the bank
+    pub mask: u16,        // bit i set = slicer i decoded this frame (a lit cell)
+    pub zones: Vec<u8>,   // per-slicer twist zone: 0 = pre-emph, 1 = flat, 2 = de-emph
+    // Mean twist (dB) across the slicers that decoded this frame: 20*log10(gain).
+    // Negative = space louder (pre-emph), positive = mark louder (de-emph), 0 =
+    // flat. A human-readable point estimate of the frame's twist for the popup.
+    pub centroid_db: f32,
 }
 
 // the packet structure (created by the RTP thread for incoming RTP packets)
@@ -114,6 +145,11 @@ pub struct RTPPacket {
     // Used only for the slicer-waterfall aggregation; not serialised per-packet.
     #[serde(skip)]
     pub slicer_mask: u16,
+
+    // per-packet twist bar payload (RF only). Set in the listener loop where the
+    // slicer gain ladder is in scope; None when no slicer data is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub twist: Option<TwistInfo>,
 }
 
 impl fmt::Display for RTPPacket {
@@ -232,7 +268,13 @@ pub async fn rtp_listener(
     // count and is the single source of truth for the slicer bank size.
     let decoder = DecoderConfig::default();
     let slicer_count = decoder.slicers;
-    let slicer_gains = space_gains(slicer_count, decoder.min_gain, decoder.max_gain);
+    let slicer_gains = space_gains(slicer_count, decoder.min_twist_db, decoder.max_twist_db);
+    // Twist zone per slicer (constant for the session); cloned onto each packet's
+    // TwistInfo so the frontend can color the twist bar without slicer telemetry.
+    let slicer_zones: Vec<u8> = slicer_gains.iter().map(|g| slicer_zone(*g)).collect();
+    // Twist (dB) per slicer = 20*log10(gain); used to compute each packet's
+    // centroid twist for the popup. Geometric gains => a linear dB ladder.
+    let slicer_db: Vec<f32> = slicer_gains.iter().map(|g| 20.0 * g.log10()).collect();
 
     // per-slicer accumulators for the slicer-diversity waterfall. `slicer_interval`
     // counts demodulations in the current 15s window; `slicer_history` keeps the
@@ -428,6 +470,26 @@ pub async fn rtp_listener(
                             // set before droppacket() so the sat-frequency policy fires.
                             packet.is_satellite = sat_freqs.contains(&packet.frequency);
                             packet.igated = crate::igate::droppacket(&packet).is_none();
+
+                            // Summarize which slicers decoded this frame into the
+                            // per-packet twist bar payload. Skipped when no slicer
+                            // fired so the frontend shows a neutral placeholder.
+                            if packet.slicer_mask != 0 && slicer_count > 0 {
+                                // mean twist (dB) over the slicers that fired
+                                let (mut sum, mut n) = (0.0f32, 0u32);
+                                for i in 0..slicer_count {
+                                    if packet.slicer_mask & (1 << i) != 0 {
+                                        sum += slicer_db[i];
+                                        n += 1;
+                                    }
+                                }
+                                packet.twist = Some(TwistInfo {
+                                    cols: slicer_count,
+                                    mask: packet.slicer_mask,
+                                    zones: slicer_zones.clone(),
+                                    centroid_db: if n > 0 { sum / n as f32 } else { 0.0 },
+                                });
+                            }
                             let p = packet;
 
                             if p.heard_direct {
@@ -663,6 +725,7 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
         longitude,
         altitude_ft,
         slicer_mask: pkt.slicer_mask,
+        twist: None,
     };
 
     MappedPacket { packet, symbol_table, symbol_code }

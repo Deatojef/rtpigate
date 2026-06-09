@@ -37,7 +37,10 @@
                             <span class="info-tip">(?)<span class="tip-text">Per-interval direct and total packets heard (left axis, lines) with the percentage of received packets igated to APRS-IS (right axis, bars). Select a time range; updates every 15s.</span></span>
                         </button>
                         <button class="panel-tab" data-panel="waterfall">AFSK Demod Slicers
-                            <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Columns are grouped by mark/space twist: low-numbered slicers favor pre-emphasized (loud-space) signals, high-numbered favor de-emphasized (loud-mark). More active slicers indicates a stronger/cleaner signal.</span></span>
+                            <span class="info-tip">(?)<span class="tip-text">Heatmap of how many packets each demodulator slicer recovered per 15s window. Brighter = more packets; newest interval on top. Each column header is that slicer's twist in dB (the mark tone's level relative to space): negative = space louder (pre-emphasized), positive = mark louder (de-emphasized), 0 = flat. Columns run left-to-right from pre-emph to de-emph. More active slicers indicates a stronger/cleaner signal.</span></span>
+                        </button>
+                        <button class="panel-tab" data-panel="slicer-dist">Slicer Distribution
+                            <span class="info-tip">(?)<span class="tip-text">Lifetime count of packets each demodulator slicer recovered since the backend started, shown as a distribution across the mark/space twist (dB) axis. Reveals which twist conditions the received signal population favors. A frame decoded by several slicers counts in each, so the total exceeds the packet count.</span></span>
                         </button>
                     </div>
                     <span id="activity-ranges" class="range-selector">
@@ -73,6 +76,11 @@
                     <div id="waterfall-zones"></div>
                     <div id="waterfall-cols"></div>
                     <div id="waterfall"></div>
+                </div>
+                <div class="panel-content" id="slicer-dist-group" style="display:none;">
+                    <div id="slicer-dist-chart-wrap">
+                        <canvas id="slicer-dist-chart"></canvas>
+                    </div>
                 </div>
             </div>
             <div class="stat-group" id="last-heard">
@@ -117,6 +125,7 @@
                             <th>Freq</th>
                             <th>Direct</th>
                             <th>Sat</th>
+                            <th title="Twist: which demodulator slicers decoded the frame, drawn as a pre-emph &rarr; de-emph strip. Lit cells = slicers that decoded; cells toward the left = pre-emphasized (loud space), toward the right = de-emphasized (loud mark), center = flat. Reflects received twist, not guaranteed transmitter pre-emphasis.">Twist</th>
                             <th>Coordinates</th>
                             <th>Hops</th>
                             <th>Path</th>

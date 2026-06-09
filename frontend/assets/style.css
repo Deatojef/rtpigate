@@ -188,6 +188,15 @@ main {
     border-radius: 4px;
     flex: 1;
     min-width: 250px;
+    /* Cap each panel at ~40% of the viewport so a long station list (or a tall
+       chart) can't stretch the row to dominate the page. The cap goes on the
+       panels (flex columns) rather than the #statistics row: a flex *row* won't
+       shrink its items to a capped height — they'd overflow and overlap the
+       Recent Packets section below — whereas a bounded flex *column* makes its
+       flex:1 inner area (#heard-content / .panel-content, both min-height:0)
+       scroll instead. Stays compact when content is short. Lifted on mobile,
+       where the panels stack and #heard-content uses its own max-height. */
+    max-height: 40vh;
 }
 
 .stat-group h2 {
@@ -233,6 +242,7 @@ main {
     z-index: 100;
     box-shadow: 0 2px 6px rgba(0,0,0,0.4);
     pointer-events: none;
+    text-align: left;
 }
 
 /* Shown (and viewport-clamped) by JS on both hover and click — see
@@ -310,14 +320,16 @@ main {
 /* Sized wrapper for the chart canvas. Chart.js runs with
    maintainAspectRatio:false, so the canvas fills this box; flex:1 lets it grow to
    match the waterfall, and min-height keeps it usable when the panel is short. */
-#activity-chart-wrap {
+#activity-chart-wrap,
+#slicer-dist-chart-wrap {
     position: relative;
     flex: 1;
     min-height: 90px;
     margin-top: 2px;
 }
 
-#activity-chart-wrap canvas {
+#activity-chart-wrap canvas,
+#slicer-dist-chart-wrap canvas {
     width: 100% !important;
     height: 100% !important;
 }
@@ -410,12 +422,14 @@ main {
     justify-content: center;
     line-height: 1.15;
     padding: 1px 0;
+    cursor: help;
 }
 
 .waterfall-col-ratio {
     font-size: 0.92em;
     font-weight: bold;
     color: var(--text);
+    white-space: nowrap;
 }
 
 /* Empty spacer above the time-label column in the zone/header rows. */
@@ -462,6 +476,7 @@ main {
     font-size: 0.7em;
     font-weight: bold;
     line-height: 1;
+    cursor: help;
 }
 
 /* Packets section */
@@ -500,7 +515,8 @@ main {
 
 #packet-table th:nth-child(5) { text-align: center; }  /* Direct */
 #packet-table th:nth-child(6) { text-align: center; }  /* Sat */
-#packet-table th:nth-child(8) { text-align: center; }  /* Hops */
+#packet-table th:nth-child(7) { text-align: center; }  /* Twist */
+#packet-table th:nth-child(9) { text-align: center; }  /* Hops */
 
 #packet-table tbody td {
     padding: 2px 6px;
@@ -547,6 +563,45 @@ td.pkt-sat {
     color: var(--text-muted);
     text-align: center;
 }
+
+/* Per-packet twist bar: one cell per demodulator slicer, laid left->right as a
+   pre-emph -> de-emph axis. Lit cells = slicers that decoded the frame (colored
+   by zone); empty cells are recessed slots so the gaps stay distinct from the
+   panel background. The lit cluster's horizontal position is the twist cue. */
+td.pkt-twist {
+    text-align: center;
+    white-space: nowrap;
+}
+
+.twist-bar {
+    display: inline-flex;
+    gap: 1px;
+    height: 14px;
+    vertical-align: middle;
+    line-height: 0;
+    cursor: help;
+}
+
+.twist-cell {
+    width: 4px;
+    height: 14px;
+    border-radius: 1px;
+    box-sizing: border-box;
+}
+
+/* Empty slot: recessed fill + border so off cells read clearly against the
+   panel and against lit cells. */
+.twist-off {
+    background-color: var(--spark-bg);
+    border: 1px solid var(--panel-border);
+}
+
+/* Lit cells, colored by twist zone to match the waterfall zone accents. The
+   transparent border keeps lit + empty cells the same total size for alignment. */
+.twist-on { border: 1px solid transparent; }
+.twist-on.twist-pre  { background-color: #6cc06c; }  /* pre-emph (loud space) */
+.twist-on.twist-flat { background-color: #9e9e9e; }  /* flat / balanced */
+.twist-on.twist-de   { background-color: #d8b94a; }  /* de-emph (loud mark) */
 
 .highlight-true {
     background-color: var(--highlight);
@@ -612,6 +667,7 @@ td.pkt-text {
     box-shadow: 0 2px 6px rgba(0,0,0,0.4);
     max-width: 80vw;
     pointer-events: none;
+    text-align: left;
 }
 
 .raw-tooltip.visible {
@@ -849,6 +905,9 @@ tr.rf-packet td.pkt-source a:hover {
 
     .stat-group {
         min-width: unset;
+        /* Stacked, each panel can size naturally; #heard-content below has its
+           own max-height to keep the table from dominating the column. */
+        max-height: none;
     }
 
     /* Tabs scroll on mobile */

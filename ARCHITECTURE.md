@@ -241,10 +241,10 @@ pub struct DataPoint<T: Add> {
 
 The most distinctive piece of the dashboard, and the reason `ka9q.rs` carries `slicer_mask` end-to-end.
 
-- The `aprs-rtp` demodulator runs a **bank of parallel slicers** (default 8). Each applies a different gain to the space tone before slicing: `demod_out = mark − space × gain`. Gains are spread geometrically across `[min_gain, max_gain]` (default `0.5 → 4.0`).
-  - `gain < 1` favors **pre-emphasized** (loud-space) signals; `gain > 1` favors **de-emphasized** (loud-mark) signals; `gain ≈ 1` is flat.
+- The `aprs-rtp` demodulator runs a **bank of parallel slicers** (default 8). Each applies a different gain to the space tone before slicing: `demod_out = mark − space × gain`. As of aprs-rtp 0.2.0 the ladder is parameterized in **twist dB**: `slicers` rungs spread evenly across `[min_twist_db, max_twist_db]` (default `−12 → +9 dB`, a 3 dB step landing one rung on 0 dB), with each rung's linear gain `= 10^(db/20)`. Uniform-in-dB is identical to geometric-in-linear-gain.
+  - Negative twist (`gain < 1`) favors **pre-emphasized** (loud-space) signals; positive (`gain > 1`) favors **de-emphasized** (loud-mark) signals; `0 dB` (`gain ≈ 1`) is flat.
 - A frame may be CRC-recovered by several slicers at once; `slicer_mask` records which. `ka9q.rs` tallies each set bit per 15s window into `SlicerInterval.counts`, keeps the last 10 windows, and ships them as `slicer_statistics`.
-- The frontend (`app.js`, `drawWaterfall`) renders columns = slicers (ordered by gain, headered with the mark:space ratio and grouped into pre-emph / flat / de-emph zones) and rows = 15s windows (newest on top). Cell brightness/number is that slicer's recovered-packet count, scaled to the busiest visible cell.
+- The frontend (`app.js`, `drawWaterfall`) renders columns = slicers (ordered by gain, headered with the slicer's twist in dB and grouped into pre-emph / flat / de-emph zones) and rows = 15s windows (newest on top). Cell brightness/number is that slicer's recovered-packet count, scaled to the busiest visible cell.
 - `space_gains()` in `ka9q.rs` re-derives the same ladder the crate uses internally (the crate's copy is private) so the frontend column labels stay truthful — kept in sync with the `DecoderConfig` passed to the listener.
 
 Interpretation: activity spread across many columns ⇒ strong/clean signals; a persistent lean toward the pre-emph or de-emph zones indicates audio twist worth correcting in the receive path.

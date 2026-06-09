@@ -93,8 +93,11 @@
     // from the cached telemetry so it isn't blank until the next 15s tick.
     function setupPanelTabs() {
         var btns = document.querySelectorAll("#left-tabs .panel-tab");
-        var activityPanel = document.getElementById("activity-group");
-        var waterfallPanel = document.getElementById("waterfall-group");
+        var panels = {
+            "activity": document.getElementById("activity-group"),
+            "waterfall": document.getElementById("waterfall-group"),
+            "slicer-dist": document.getElementById("slicer-dist-group"),
+        };
         var ranges = document.getElementById("activity-ranges");
         for (var i = 0; i < btns.length; i++) {
             (function (btn) {
@@ -103,17 +106,21 @@
                         btns[j].classList.remove("active");
                     }
                     btn.classList.add("active");
-                    var showActivity = btn.getAttribute("data-panel") === "activity";
-                    activityPanel.style.display = showActivity ? "" : "none";
-                    waterfallPanel.style.display = showActivity ? "none" : "";
-                    if (ranges) ranges.style.display = showActivity ? "" : "none";
-                    if (showActivity) {
-                        if (activityChart) {
-                            activityChart.resize();
-                            activityChart.update("none");
-                        }
-                    } else if (lastTelemetry) {
-                        drawWaterfall(lastTelemetry);
+                    var sel = btn.getAttribute("data-panel");
+                    for (var key in panels) {
+                        if (panels[key]) panels[key].style.display = (key === sel) ? "" : "none";
+                    }
+                    // The range selector only applies to the activity chart.
+                    if (ranges) ranges.style.display = (sel === "activity") ? "" : "none";
+                    // Charts laid out while their panel was display:none need a resize
+                    // to pick up the now-visible dimensions; the waterfall redraws from
+                    // the cached telemetry.
+                    if (sel === "activity") {
+                        if (activityChart) { activityChart.resize(); activityChart.update("none"); }
+                    } else if (sel === "waterfall") {
+                        if (lastTelemetry) drawWaterfall(lastTelemetry);
+                    } else if (sel === "slicer-dist") {
+                        if (slicerDistChart) { slicerDistChart.resize(); updateSlicerDistChart(); }
                     }
                 });
             })(btns[i]);
@@ -539,6 +546,7 @@
             btn.textContent = isLight ? "Dark" : "Light";
             localStorage.setItem("theme", isLight ? "light" : "dark");
             refreshActivityChartTheme();
+            refreshSlicerDistChartTheme();
         });
     }
 
@@ -947,6 +955,10 @@
     };
     var currentRange = "1h";
     var activityChart = null;
+    var slicerDistChart = null;
+    // Monochrome green for the slicer-distribution bars, matching the heatmap's
+    // green scale (WATERFALL_STOPS mid stop).
+    var SLICER_BAR_COLOR = "#3fae3f";
     // Most recent slicer telemetry, cached so the waterfall can be redrawn on
     // demand (e.g. when its tab is activated) without waiting for the next tick.
     var lastTelemetry = null;
@@ -1181,6 +1193,94 @@
         activityChart.update("none");
     }
 
+    // Lifetime per-slicer demodulation histogram: one bar per slicer along the
+    // twist (dB) axis, colored by zone. Data comes from the cached slicer
+    // telemetry (lifetime_slicer_hits); a frame decoded by several slicers counts
+    // in each bar, so the bars sum to more than the total packet count.
+    function initSlicerDistChart() {
+        if (typeof Chart === "undefined") return;
+        var canvas = document.getElementById("slicer-dist-chart");
+        if (!canvas) return;
+        var theme = chartThemeColors();
+        slicerDistChart = new Chart(canvas.getContext("2d"), {
+            type: "bar",
+            data: {
+                labels: [],
+                datasets: [{
+                    label: "Packets demodulated",
+                    data: [],
+                    backgroundColor: SLICER_BAR_COLOR,
+                    borderWidth: 0,
+                    categoryPercentage: 0.92,
+                    barPercentage: 0.96,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    x: {
+                        title: { display: true, text: "slicer twist (dB, mark vs space)", color: theme.text },
+                        ticks: { color: theme.text, autoSkip: false },
+                        grid: { color: theme.grid, display: false },
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: "packets demodulated (lifetime)", color: theme.text },
+                        ticks: { color: theme.text, precision: 0 },
+                        grid: { color: theme.grid },
+                    },
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            title: function (items) {
+                                return "Slicer " + items[0].dataIndex + " · " + items[0].label + " dB";
+                            },
+                            label: function (ctx) {
+                                var v = ctx.parsed.y || 0;
+                                var total = ctx.dataset._total || 0;
+                                var pct = total > 0 ? ((v / total) * 100).toFixed(1) + "%" : "n/a";
+                                return v.toLocaleString() + " packets (" + pct + " of all hits)";
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function updateSlicerDistChart() {
+        if (!slicerDistChart || !lastTelemetry) return;
+        var hits = lastTelemetry.lifetime_slicer_hits || [];
+        var gains = lastTelemetry.slicer_gains || [];
+        var cols = lastTelemetry.slicer_count || hits.length;
+        var labels = [], data = [], total = 0;
+        for (var i = 0; i < cols; i++) {
+            var g = gains[i] != null ? gains[i] : 1;
+            labels.push(twistDbLabel(g));
+            var c = hits[i] || 0;
+            data.push(c);
+            total += c;
+        }
+        var ds = slicerDistChart.data.datasets[0];
+        slicerDistChart.data.labels = labels;
+        ds.data = data;
+        ds._total = total;
+        slicerDistChart.update("none");
+    }
+
+    function refreshSlicerDistChartTheme() {
+        if (!slicerDistChart) return;
+        var theme = chartThemeColors();
+        var sc = slicerDistChart.options.scales;
+        sc.x.ticks.color = theme.text; sc.x.grid.color = theme.grid; sc.x.title.color = theme.text;
+        sc.y.ticks.color = theme.text; sc.y.grid.color = theme.grid; sc.y.title.color = theme.text;
+        slicerDistChart.update("none");
+    }
+
     function setupRangeSelector() {
         var btns = document.querySelectorAll("#activity-ranges .range-btn");
         for (var i = 0; i < btns.length; i++) {
@@ -1239,11 +1339,12 @@
         deemph: "favors de-emphasized (loud-mark) signals"
     };
 
-    // Format a space-gain as a mark:space ratio. gain is the space multiplier, so
-    // mark:space = (1/gain):1, e.g. gain 0.5 -> "2.0:1", gain 4.0 -> "1:4.0".
-    function ratioLabel(g) {
-        var r = 1 / g;
-        return r >= 1 ? r.toFixed(1) + ":1" : "1:" + g.toFixed(1);
+    // A slicer's twist in dB = 20*log10(gain): the mark tone's level relative to
+    // space. Negative = space louder (pre-emph), positive = mark louder (de-emph),
+    // 0 = flat. Rounded to a whole dB for the compact column header.
+    function twistDbLabel(g) {
+        var r = Math.round(20 * Math.log10(g));
+        return r === 0 ? "0" : (r > 0 ? "+" : "") + r;
     }
 
     function drawWaterfall(telem) {
@@ -1298,10 +1399,10 @@
                 col.className = "waterfall-col";
                 var ratio = document.createElement("span");
                 ratio.className = "waterfall-col-ratio";
-                ratio.textContent = ratioLabel(g);
+                ratio.textContent = twistDbLabel(g) + " dB";
                 col.appendChild(ratio);
-                col.title = "Slicer " + c + " · gain " + g.toFixed(2) +
-                    " · mark:space " + ratioLabel(g) + " · " + ZONE_DESC[zoneC];
+                col.title = "Slicer " + c + " · twist " + twistDbLabel(g) +
+                    " dB (mark level vs space) · gain " + g.toFixed(2) + " · " + ZONE_DESC[zoneC];
                 colsRow.appendChild(col);
             }
         }
@@ -1345,7 +1446,9 @@
                     cell.style.color = t > 0.5 ? "#0a1a0a" : "#cfe8cf";
                 }
                 if (rowTime) {
-                    cell.title = "Slicer " + col + " · " + rowTime + " · " + count + " packet" + (count === 1 ? "" : "s");
+                    var cg = gains[col] != null ? gains[col] : 1;
+                    cell.title = "Slicer " + col + " (twist " + twistDbLabel(cg) + " dB) · " +
+                        count + " packet" + (count === 1 ? "" : "s") + " · " + rowTime;
                 }
                 grid.appendChild(cell);
             }
@@ -1388,6 +1491,52 @@
 
         rawTip.style.top = top + "px";
         rawTip.style.left = left + "px";
+    }
+
+    // ---- Twist bar ----
+
+    // Zone index (0/1/2 from the backend) -> CSS class / label. Matches the
+    // waterfall zone palette so the two views read consistently.
+    var TWIST_ZONE_CLASS = ["twist-pre", "twist-flat", "twist-de"];
+
+    // Build the compact per-packet twist bar: one cell per slicer, lit cells
+    // (those that decoded the frame) colored by twist zone, empty cells drawn as
+    // recessed slots. The horizontal position of the lit cluster is the cue —
+    // left = pre-emphasized, right = de-emphasized, center = flat. A title
+    // summarizes the centroid + span for hover.
+    function buildTwistBar(twist) {
+        var bar = document.createElement("span");
+        bar.className = "twist-bar";
+        var cols = twist.cols;
+        var mask = twist.mask >>> 0;
+        var zones = twist.zones || [];
+        var litCount = 0, minIdx = -1, maxIdx = -1;
+        for (var i = 0; i < cols; i++) {
+            var cell = document.createElement("span");
+            cell.className = "twist-cell";
+            if ((mask & (1 << i)) !== 0) {
+                var z = zones[i] != null ? zones[i] : 1;
+                cell.classList.add("twist-on", TWIST_ZONE_CLASS[z] || "twist-flat");
+                litCount++;
+                if (minIdx < 0) minIdx = i;
+                maxIdx = i;
+            } else {
+                cell.classList.add("twist-off");
+            }
+            bar.appendChild(cell);
+        }
+        // Tooltip: the centroid twist in dB (mark vs space), with the same flat-zone
+        // boundaries (+/-1.9 dB ~ gain 0.8..1.25) the cell colors use.
+        if (litCount > 0) {
+            var db = twist.centroid_db;
+            var dir = db < -1.9 ? "space louder / pre-emph"
+                    : db > 1.9 ? "mark louder / de-emph"
+                    : "balanced / flat";
+            var span = minIdx === maxIdx ? "#" + minIdx : "#" + minIdx + "–#" + maxIdx;
+            bar.title = "Twist " + (db >= 0 ? "+" : "") + db.toFixed(1) + " dB (" + dir +
+                ") · slicers " + span + " of " + cols + " (" + litCount + " lit)";
+        }
+        return bar;
     }
 
     // ---- Packet row creation ----
@@ -1486,6 +1635,17 @@
             tdSat.textContent = "--";
         }
         tr.appendChild(tdSat);
+
+        // Twist bar — which demodulator slicers decoded the frame, as a compact
+        // pre-emph -> de-emph strip. RF only; "--" when no slicer data is present.
+        var tdTwist = document.createElement("td");
+        tdTwist.className = "pkt-twist";
+        if (type === "rf" && data.twist && data.twist.cols > 0) {
+            tdTwist.appendChild(buildTwistBar(data.twist));
+        } else {
+            tdTwist.textContent = "--";
+        }
+        tr.appendChild(tdTwist);
 
         // Coordinates — prefer backend-parsed position, fall back to JS parser
         var tdCoords = document.createElement("td");
@@ -1679,6 +1839,7 @@
             onMessage();
             lastTelemetry = JSON.parse(e.data);
             drawWaterfall(lastTelemetry);
+            updateSlicerDistChart();
         });
 
         es.addEventListener("station_statistics", function (e) {
@@ -1695,6 +1856,7 @@
     setupPanelTabs();
     setupRangeSelector();
     initActivityChart();
+    initSlicerDistChart();
     seedActivityHistory().then(updateActivityChart);
     fetchConfig();
     fetchSatellitePackets();
