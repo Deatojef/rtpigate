@@ -6,7 +6,7 @@ use chrono::{DateTime, Local, Utc};
 
 use log::{info, warn, error, debug};
 
-use aprs_rtp::{AprsListener, config::{SourceConfig, DecoderConfig}};
+use aprs_rtp::{AprsListener, config::SourceConfig};
 use aprs_decode::packet::{AprsPacket as DecodedPacket, AprsData};
 
 use crate::config::{Config, AppTelemetry, PacketTelemetry, SlicerTelemetry, SlicerInterval, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
@@ -132,6 +132,13 @@ pub struct RTPPacket {
     // Mirrors what aprs_is.rs will decide, minus the dedup step — duplicates
     // within the gating window are still counted as "would-igate" here.
     pub igated: bool,
+
+    // Count of info-field bytes the aprs-rtp decoder flagged as almost certainly
+    // not real APRS payload: C0 control bytes (other than tab/CR/LF) plus any
+    // invalid-UTF-8 bytes (e.g. a stuck transmitter's trailing 0xff). 0 for a
+    // clean frame; >0 means the displayed `info` is likely garbled. Advisory
+    // only — the frame is still FCS-valid and the raw bytes are untouched.
+    pub info_invalid_bytes: usize,
 
     // object or item name (if this packet is an object/item report)
     pub object_name: Option<String>,
@@ -265,8 +272,11 @@ pub async fn rtp_listener(
     };
 
     // decoder configuration; `slicers` (default 8) drives the waterfall column
-    // count and is the single source of truth for the slicer bank size.
-    let decoder = DecoderConfig::default();
+    // count and is the single source of truth for the slicer bank size. The
+    // slicer count and gain-ladder bounds (min/max twist dB) can be overridden
+    // via the optional [decoder] section in config.toml; everything downstream
+    // (space_gains ladder, twist zones, waterfall) derives from this value.
+    let decoder = config.decoder_config();
     let slicer_count = decoder.slicers;
     let slicer_gains = space_gains(slicer_count, decoder.min_twist_db, decoder.max_twist_db);
     // Twist zone per slicer (constant for the session); cloned onto each packet's
@@ -634,6 +644,9 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
     let info = String::from_utf8_lossy(&pkt.info).to_string();
     let info_bytes = pkt.info.clone();
 
+    // advisory garble flag from the decoder (suspect/invalid-UTF-8 byte count)
+    let info_invalid_bytes = pkt.info_invalid_bytes;
+
     // viapath and filtered digipeater path (real callsigns only)
     let path = pkt.via.join(",");
     let digipeater_path: Vec<String> = pkt.via.iter()
@@ -720,6 +733,7 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
         frequency: pkt.freq_mhz,
         is_satellite: false,
         igated: false,
+        info_invalid_bytes,
         object_name,
         latitude,
         longitude,

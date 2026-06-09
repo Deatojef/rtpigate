@@ -9,6 +9,13 @@
     var stationLat = null;
     var stationLon = null;
 
+    // Whether igating is enabled in the backend config (from /api/config).
+    // Controls how the Recent Packets "Dropped" column is highlighted: when
+    // igating is on, a dropped (non-forwarded) packet is the exception and its
+    // "T" is highlighted amber; when off, every packet shows a plain
+    // (unhighlighted) "T" since nothing is forwarded.
+    var igatingEnabled = false;
+
     // Status indicator elements
     var sseStatus = document.getElementById("sse-status");
     var rtpStatus = document.getElementById("rtp-status");
@@ -558,6 +565,10 @@
             stationLat = cfg.location.lat;
             stationLon = cfg.location.lon;
         }
+
+        // Track whether igating is enabled so the Igated column can highlight
+        // the exceptional case (see addPacketRow).
+        igatingEnabled = !!(cfg.aprsis && cfg.aprsis.igating);
 
         // Update title bar with callsign and station name
         var titleEl = document.getElementById("header-title");
@@ -1635,6 +1646,52 @@
             tdSat.textContent = "--";
         }
         tr.appendChild(tdSat);
+
+        // Dropped — whether this RF packet was NOT forwarded to APRS-IS.
+        // Inverse of `data.igated`. Highlighting flags the exceptional case:
+        //   * igating enabled, gated     -> plain "F" (forwarded; the norm).
+        //   * igating enabled, NOT gated -> amber-highlighted "T" (dropped by
+        //     the gating policy; the exception worth the operator's attention).
+        //   * igating disabled           -> plain "T" for every packet (nothing
+        //     is forwarded, so a drop is expected, not noteworthy).
+        // RF only; "--" for inet packets.
+        var tdDropped = document.createElement("td");
+        tdDropped.className = "pkt-dropped";
+        if (type === "rf") {
+            if (igatingEnabled && data.igated) {
+                tdDropped.textContent = "F";
+            } else if (igatingEnabled) {
+                var markDr = document.createElement("mark");
+                markDr.className = "highlight-warn";
+                markDr.textContent = "T";
+                tdDropped.appendChild(markDr);
+            } else {
+                tdDropped.textContent = "T";
+            }
+        } else {
+            tdDropped.textContent = "--";
+        }
+        tr.appendChild(tdDropped);
+
+        // Garbled — T if the decoder flagged suspect/invalid-UTF-8 bytes in the
+        // info field (info_invalid_bytes > 0). RF only; "--" for inet packets.
+        var tdGarbled = document.createElement("td");
+        tdGarbled.className = "pkt-garbled";
+        if (type === "rf") {
+            if (data.info_invalid_bytes > 0) {
+                var markG = document.createElement("mark");
+                markG.className = "highlight-warn";
+                markG.textContent = "T";
+                markG.title = data.info_invalid_bytes + " suspect byte"
+                    + (data.info_invalid_bytes === 1 ? "" : "s");
+                tdGarbled.appendChild(markG);
+            } else {
+                tdGarbled.textContent = "F";
+            }
+        } else {
+            tdGarbled.textContent = "--";
+        }
+        tr.appendChild(tdGarbled);
 
         // Twist bar — which demodulator slicers decoded the frame, as a compact
         // pre-emph -> de-emph strip. RF only; "--" when no slicer data is present.

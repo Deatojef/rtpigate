@@ -11,6 +11,7 @@
     --row-border: #404040;
     --row-hover: #404040;
     --highlight: #2e7d32;
+    --warn: #d8b94a;  /* twist de-emph yellow */
     --rf-color: #81d4fa;
     --inet-color: #a5d6a7;
     --inet-freq: #505050;
@@ -28,6 +29,7 @@ body.light {
     --row-border: #ccc;
     --row-hover: #e8e8e8;
     --highlight: #2e7d32;
+    --warn: #d8b94a;  /* twist de-emph yellow */
     --rf-color: #0277bd;
     --inet-color: #2e7d32;
     --inet-freq: #bbb;
@@ -513,10 +515,12 @@ main {
     white-space: nowrap;
 }
 
-#packet-table th:nth-child(5) { text-align: center; }  /* Direct */
-#packet-table th:nth-child(6) { text-align: center; }  /* Sat */
-#packet-table th:nth-child(7) { text-align: center; }  /* Twist */
-#packet-table th:nth-child(9) { text-align: center; }  /* Hops */
+#packet-table th:nth-child(5)  { text-align: center; }  /* Direct */
+#packet-table th:nth-child(6)  { text-align: center; }  /* Sat */
+#packet-table th:nth-child(7)  { text-align: center; }  /* Dropped */
+#packet-table th:nth-child(8)  { text-align: center; }  /* Garbled */
+#packet-table th:nth-child(9)  { text-align: center; }  /* Twist */
+#packet-table th:nth-child(11) { text-align: center; }  /* Hops */
 
 #packet-table tbody td {
     padding: 2px 6px;
@@ -558,7 +562,9 @@ td.pkt-freq {
 }
 
 td.pkt-direct,
-td.pkt-sat {
+td.pkt-sat,
+td.pkt-dropped,
+td.pkt-garbled {
     font-size: 0.9em;
     color: var(--text-muted);
     text-align: center;
@@ -606,6 +612,17 @@ td.pkt-twist {
 .highlight-true {
     background-color: var(--highlight);
     color: #fff;
+    padding: 1px 4px;
+    border-radius: 2px;
+}
+
+/* Yellow highlight for an exceptional/attention state (e.g. a packet dropped
+   from igating, or a garbled info field) — distinct from the green "true".
+   Uses the Twist column's de-emph yellow; dark text for contrast on the light
+   background. */
+.highlight-warn {
+    background-color: var(--warn);
+    color: #222;
     padding: 1px 4px;
     border-radius: 2px;
 }

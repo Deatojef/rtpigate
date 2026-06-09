@@ -6,6 +6,8 @@ use crate::error::RtpigateError;
 
 use crate::ka9q::Packet;
 
+use aprs_rtp::config::DecoderConfig;
+
 #[derive(Debug, Clone)]
 pub enum DataItem {
     Pkt(Packet),
@@ -141,6 +143,7 @@ pub struct Config {
     pub rtp: RtpConfig,
     pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
+    pub decoder: Option<DecoderSettings>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -189,6 +192,18 @@ pub struct SatelliteConfig {
     pub frequencies: Option<Vec<f64>>,
 }
 
+/// Optional overrides for the aprs-rtp demodulator's slicer bank. All fields
+/// default to the crate's `DecoderConfig::default()` when omitted. `slicers` is
+/// the number of parallel amplitude-imbalance slicers (1–16); `min_twist_db`
+/// and `max_twist_db` bound the gain ladder those slicers are spread across,
+/// expressed in twist dB (mark-minus-space amplitude imbalance).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct DecoderSettings {
+    pub slicers: Option<usize>,
+    pub min_twist_db: Option<f32>,
+    pub max_twist_db: Option<f32>,
+}
+
 /// Sanitized APRS-IS config for the frontend (passcode omitted)
 #[derive(Serialize, Debug, Clone)]
 pub struct AprsisConfigPublic {
@@ -232,6 +247,26 @@ impl Config {
             satellite_frequencies: self.satellite_frequencies(),
             started_at: None,
         }
+    }
+
+    /// Builds the aprs-rtp `DecoderConfig`, starting from the crate defaults and
+    /// applying any overrides from the optional `[decoder]` section. Only the
+    /// slicer count and gain-ladder bounds are configurable here; the remaining
+    /// fields (tones, baud, fix_bits) keep their crate defaults.
+    pub fn decoder_config(&self) -> DecoderConfig {
+        let mut decoder = DecoderConfig::default();
+        if let Some(d) = &self.decoder {
+            if let Some(slicers) = d.slicers {
+                decoder.slicers = slicers;
+            }
+            if let Some(min) = d.min_twist_db {
+                decoder.min_twist_db = min;
+            }
+            if let Some(max) = d.max_twist_db {
+                decoder.max_twist_db = max;
+            }
+        }
+        decoder
     }
 
     /// Returns the configured satellite frequencies, or a default of [145.825]
@@ -317,6 +352,23 @@ impl Config {
                 }
                 if self.location.alt.is_none() {
                     errors.push("[location] alt is required when beaconing is enabled".into());
+                }
+            }
+        }
+
+        // Decoder slicer/gain-ladder validation (matches aprs-rtp's accepted ranges)
+        if let Some(ref decoder) = self.decoder {
+            if let Some(slicers) = decoder.slicers {
+                if !(1..=16).contains(&slicers) {
+                    errors.push(format!("[decoder] slicers {} is out of range (1 to 16)", slicers));
+                }
+            }
+            if let (Some(min), Some(max)) = (decoder.min_twist_db, decoder.max_twist_db) {
+                if min >= max {
+                    errors.push(format!(
+                        "[decoder] min_twist_db ({}) must be less than max_twist_db ({})",
+                        min, max
+                    ));
                 }
             }
         }
