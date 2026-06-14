@@ -264,7 +264,7 @@
 
             // Last Heard
             var tdTime = document.createElement("td");
-            tdTime.textContent = formatTime(s.last_heard);
+            tdTime.textContent = formatDateTime(s.last_heard);
             tr.appendChild(tdTime);
 
             // Frequency
@@ -423,7 +423,7 @@
 
             // Time
             var tdTime = document.createElement("td");
-            tdTime.textContent = formatTime(p.receivetime);
+            tdTime.textContent = formatDateTime(p.receivetime);
             tr.appendChild(tdTime);
 
             // Igate (T green / F plain)
@@ -937,6 +937,17 @@
         var m = String(d.getMinutes()).padStart(2, "0");
         var s = String(d.getSeconds()).padStart(2, "0");
         return h + ":" + m + ":" + s;
+    }
+
+    var MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    // Like formatTime but prefixed with a short date (MMM-DD) so table rows
+    // spanning multiple days aren't ambiguous.
+    function formatDateTime(isoString) {
+        var d = new Date(isoString);
+        var day = String(d.getDate()).padStart(2, "0");
+        return MONTH_ABBR[d.getMonth()] + "-" + day + " " + formatTime(isoString);
     }
 
     // ---- Latest data point value ----
@@ -1559,7 +1570,7 @@
         // Time
         var tdTime = document.createElement("td");
         tdTime.className = "pkt-time";
-        tdTime.textContent = formatTime(data.receivetime);
+        tdTime.textContent = formatDateTime(data.receivetime);
         tr.appendChild(tdTime);
 
         // Symbol
