@@ -362,7 +362,7 @@
     function renderSatellitePackets() {
         pruneSatPackets();
 
-        var headers = ["", "Callsign", "Time", "Igate", "Altitude (ft)",
+        var headers = ["", "Callsign", "Date/Time", "Igate", "Altitude (ft)",
                        "Path", "Hops", "Distance"];
 
         heardThead.innerHTML = "";
