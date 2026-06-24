@@ -83,12 +83,12 @@ frequencies = [145.825]
 
 # Number of parallel amplitude-imbalance slicers (1-16). More slicers cover a
 # wider range of mark/space twist at the cost of CPU. Default: 8.
-#slicers = 8
+slicers = 9
 
 # Gain-ladder bounds in twist dB (mark-minus-space amplitude imbalance). The
 # slicers are spread evenly across [min_twist_db, max_twist_db]. Negative dB is
 # tuned for space louder than mark, 0 dB for balanced, positive dB for mark
 # louder. Narrow the range to concentrate resolution where your receiver's
 # imbalance lands; widen it to cover more imbalance. Defaults: -12.0 / 9.0.
-#min_twist_db = -12.0
-#max_twist_db = 9.0
+min_twist_db = -12.0
+max_twist_db = 12.0
