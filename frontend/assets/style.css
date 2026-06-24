@@ -673,6 +673,12 @@ td.pkt-text {
     cursor: pointer;
 }
 
+/* Satellites tab: the Date/Time cell reveals the full raw packet on
+   hover/click, so flag it as interactive. */
+td.sat-time {
+    cursor: pointer;
+}
+
 .raw-tooltip {
     display: none;
     position: fixed;

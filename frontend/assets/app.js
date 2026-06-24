@@ -362,7 +362,7 @@
     function renderSatellitePackets() {
         pruneSatPackets();
 
-        var headers = ["", "Callsign", "Date/Time", "Igate", "Altitude (ft)",
+        var headers = ["", "Callsign", "Date/Time", "Freq", "Igate", "Altitude (ft)",
                        "Path", "Hops", "Distance"];
 
         heardThead.innerHTML = "";
@@ -421,10 +421,22 @@
             }
             tr.appendChild(tdCall);
 
-            // Time
+            // Time — hover or click reveals the full raw packet, mirroring the
+            // Recent Packets text cell.
             var tdTime = document.createElement("td");
+            tdTime.className = "sat-time";
             tdTime.textContent = formatDateTime(p.receivetime);
+            attachRawTooltip(tdTime, p.raw);
             tr.appendChild(tdTime);
+
+            // Freq (MHz) — the channel this copy was decoded on. Surfacing it
+            // makes clear that a satellite-tab entry actually arrived on a
+            // configured satellite frequency (e.g. terrestrial traffic the
+            // 145.825 RX also heard).
+            var tdFreq = document.createElement("td");
+            tdFreq.className = "heard-freq";
+            tdFreq.textContent = p.frequency != null ? p.frequency.toFixed(3) : "--";
+            tr.appendChild(tdFreq);
 
             // Igate (T green / F plain)
             var tdIgate = document.createElement("td");
@@ -533,8 +545,7 @@
                 activeTooltip = null;
             }
             // also dismiss raw packet tooltip
-            rawTip.classList.remove("visible");
-            rawTip._source = null;
+            hideRawTooltip();
         });
     }
 
@@ -1483,22 +1494,23 @@
     rawTip.className = "raw-tooltip";
     document.body.appendChild(rawTip);
 
-    function showRawTooltip(tdEl) {
+    function hideRawTooltip() {
+        rawTip.classList.remove("visible");
+        rawTip._source = null;
+        rawTip._pinned = false;
+    }
+
+    // Show the raw packet for a cell and position it above (or below, if it
+    // would clip the top of the viewport). Used for both hover (transient) and
+    // click (pinned) display.
+    function showRawTooltipFor(tdEl) {
         var raw = tdEl.getAttribute("data-raw");
         if (!raw) return;
-
-        // toggle off if same cell clicked again
-        if (rawTip.classList.contains("visible") && rawTip._source === tdEl) {
-            rawTip.classList.remove("visible");
-            rawTip._source = null;
-            return;
-        }
 
         rawTip.textContent = raw;
         rawTip.classList.add("visible");
         rawTip._source = tdEl;
 
-        // position above the clicked cell
         var rect = tdEl.getBoundingClientRect();
         var tipRect = rawTip.getBoundingClientRect();
 
@@ -1513,6 +1525,36 @@
 
         rawTip.style.top = top + "px";
         rawTip.style.left = left + "px";
+    }
+
+    // Click handler: toggle a *pinned* tooltip on/off for the cell. A pinned
+    // tooltip stays up until the same cell is clicked again or a click lands
+    // elsewhere, and is not dismissed by mouseleave.
+    function showRawTooltip(tdEl) {
+        if (rawTip._pinned && rawTip._source === tdEl) {
+            hideRawTooltip();
+            return;
+        }
+        showRawTooltipFor(tdEl);
+        rawTip._pinned = true;
+    }
+
+    // Wire a cell to reveal its full raw packet on hover (transient) and pin it
+    // on click — the same affordance the Recent Packets text cell offers.
+    function attachRawTooltip(tdEl, raw) {
+        tdEl.setAttribute("data-raw", raw);
+        tdEl.addEventListener("mouseenter", function () {
+            if (rawTip._pinned) return;
+            showRawTooltipFor(this);
+        });
+        tdEl.addEventListener("mouseleave", function () {
+            if (rawTip._pinned) return;
+            hideRawTooltip();
+        });
+        tdEl.addEventListener("click", function (e) {
+            e.stopPropagation();
+            showRawTooltip(this);
+        });
     }
 
     // ---- Twist bar ----
