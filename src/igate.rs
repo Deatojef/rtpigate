@@ -4,12 +4,21 @@ use tokio::{fs, io::AsyncWriteExt};
 
 use log::debug;
 
-use crate::config::Location;
+use crate::config::{Location, DaoMode};
 use crate::error::RtpigateError;
 use crate::ka9q::RTPPacket;
 
 /// TOCALL value for this software. 'APZ' denotes experimental. 'JD1' denotes the version.
 pub static TOCALL: &str = "APZJD1";
+
+/// Encode the sub-hundredth-of-a-minute remainder (in minutes, expected in
+/// `[0, 0.01)`) as a base-91 `!DAO!` character per APRS spec 1.2: the value is
+/// `floor(remainder / 0.01 * 91)`, mapped onto the printable range ASCII 33..=123.
+fn base91_dao_char(rem_minutes: f64) -> char {
+    let val = ((rem_minutes / 0.01) * 91.0).floor() as i64;
+    let val = val.clamp(0, 90) as u8;
+    (33 + val) as char
+}
 
 
 // ---- Packet filtering ----
@@ -108,7 +117,7 @@ pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
 // ---- Position beacon construction ----
 
 /// Construct a position packet for beaconing to APRS-IS.
-pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<String>, overlay: &Option<String>) -> Result<String, RtpigateError> {
+pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<String>, overlay: &Option<String>, dao: DaoMode) -> Result<String, RtpigateError> {
 
     match (l.alt, l.lat, l.lon) {
         (Some(alt_ft), Some(lat), Some(lon)) => {
@@ -132,16 +141,44 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
             let lat_ns = if lat >= 0.0 { 'N' } else { 'S' };
             let lon_ew = if lon >= 0.0 { 'E' } else { 'W' };
 
-            // convert lat & lon to degrees, decimal minutes
-            let lat_d = abs_lat.trunc();
-            let lon_d = abs_lon.trunc();
-            let lat_m = (abs_lat - lat_d) * 60.0;
-            let lon_m = (abs_lon - lon_d) * 60.0;
+            // Whole degrees and minutes. The base position is ddmm.hh (hundredths of
+            // a minute, ~18.5 m); the sub-hundredth remainder feeds the optional
+            // !DAO! precision extension. The small epsilon guards against a value
+            // sitting just below an exact boundary in floating point (e.g. 20.94
+            // stored as 20.93999…).
+            let lat_deg = abs_lat.trunc() as u64;
+            let lon_deg = abs_lon.trunc() as u64;
+            let lat_m = (abs_lat - lat_deg as f64) * 60.0;
+            let lon_m = (abs_lon - lon_deg as f64) * 60.0;
 
-            // For APRS, the position report represents latitude as ddmm.ssN or ddmm.ssS
-            // For APRS, the position report represents longitude as dddmm.ssWor dddmm.ssE
-            let lat_string = format!("{:02}{:05.2}{}", lat_d, lat_m, lat_ns);
-            let lon_string = format!("{:03}{:05.2}{}", lon_d, lon_m, lon_ew);
+            // base position in integer hundredths of a minute, truncated
+            let lat_hund = (lat_m * 100.0 + 1e-6).floor() as u64;
+            let lon_hund = (lon_m * 100.0 + 1e-6).floor() as u64;
+            // remainder beyond the hundredths, in minutes, clamped to [0, 0.01)
+            let lat_rem = (lat_m - lat_hund as f64 / 100.0).max(0.0);
+            let lon_rem = (lon_m - lon_hund as f64 / 100.0).max(0.0);
+
+            // For APRS, the position report represents latitude as ddmm.hhN/S
+            // and longitude as dddmm.hhE/W (minutes to hundredths).
+            let lat_string = format!("{:02}{:02}.{:02}{}", lat_deg, lat_hund / 100, lat_hund % 100, lat_ns);
+            let lon_string = format!("{:03}{:02}.{:02}{}", lon_deg, lon_hund / 100, lon_hund % 100, lon_ew);
+
+            // Optional !DAO! additional-precision extension (APRS spec 1.2, WGS84),
+            // recovering precision the ddmm.hh base format drops:
+            //   Human  -> "!W" + 1 extra digit of minutes per axis (~1.85 m)
+            //   Base91 -> "!w" + base-91 char per axis (~0.2 m)
+            //   Off    -> nothing
+            let dao_string = match dao {
+                DaoMode::Off => String::new(),
+                DaoMode::Human => {
+                    let lat_d = ((lat_rem * 1000.0) + 1e-6).floor().min(9.0) as u8;
+                    let lon_d = ((lon_rem * 1000.0) + 1e-6).floor().min(9.0) as u8;
+                    format!("!W{}{}!", lat_d, lon_d)
+                },
+                DaoMode::Base91 => {
+                    format!("!w{}{}!", base91_dao_char(lat_rem), base91_dao_char(lon_rem))
+                },
+            };
 
             // APRS symbols and overlays are convoluted nonsense.  Try and decipher...
             let overlay_string = match overlay {
@@ -163,9 +200,10 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
                 None => String::from("0"),
             };
 
-            // construct the packet text
+            // construct the packet text. The !DAO! token lives in the comment; APRS
+            // parsers scan the comment for it, so it is appended after the name.
             let packet_text = format!(
-                "{}>{},TCPIP*:/{:02}{:02}{:02}h{}{}{}{}/A={:06.0}{}",
+                "{}>{},TCPIP*:/{:02}{:02}{:02}h{}{}{}{}/A={:06.0}{}{}",
                 callsign,
                 TOCALL,
                 hours,
@@ -176,7 +214,8 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
                 lon_string,
                 symbol_string,
                 alt_ft,
-                name
+                name,
+                dao_string
             );
 
             Ok(packet_text)

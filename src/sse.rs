@@ -86,6 +86,13 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                                     debug!("No SSE subscribers connected");
                                 }
                             },
+                            AppTelemetry::GpsStatus(telem) => {
+                                let key = telem.name.clone();
+                                let thejson = json!(telem);
+                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                    debug!("No SSE subscribers connected");
+                                }
+                            },
                         }
                     },
 

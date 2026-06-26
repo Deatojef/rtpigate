@@ -21,13 +21,16 @@ use log::{info, warn, error, debug};
 mod error;
 
 mod config;
-use config::{Config, DataItem, PublicConfig, APRSISPasscode};
+use config::{Config, DataItem, PublicConfig, APRSISPasscode, GpsFix, PositionSource};
 
 mod ka9q;
 use ka9q::{rtp_listener, RTPPacket};
 
 mod aprs_is;
 use aprs_is::aprsis_task;
+
+mod gpsd;
+use gpsd::gpsd_task;
 
 mod igate;
 
@@ -181,6 +184,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let history_store: Arc<RwLock<HistoryStore>> = Arc::new(RwLock::new(HistoryStore::new()));
 
     //#################
+    // latest GPS fix from gpsd, written by gpsd_task and read by aprsis_task to
+    // source beacon position. Stays None when [location] source != gpsd.
+    //#################
+    let gps_state: Arc<RwLock<Option<GpsFix>>> = Arc::new(RwLock::new(None));
+
+    //#################
     // rtp_listener task
     //#################
     let rtp_tx_sender = data_tx.clone();
@@ -206,15 +215,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let aprsis_tx_sender = data_tx.clone();
             let aprsis_config = Arc::clone(&shared_config);
             let aprsis_token = cancel_token.clone();
+            let aprsis_gps_state = Arc::clone(&gps_state);
 
             task_set.spawn(async move {
-                if let Err(e) = aprsis_task(aprsis_tx_sender, aprsis_token, aprsis_config).await {
+                if let Err(e) = aprsis_task(aprsis_tx_sender, aprsis_token, aprsis_config, aprsis_gps_state).await {
                     error!("Unable to create aprsis task: {}", e);
                 }
             });
 
             expected_tasks += 1;
         }
+    }
+
+
+    //#################
+    // gpsd_task task — only spawned when GPSD is the position source
+    //#################
+    if shared_config.location.source == PositionSource::Gpsd {
+        let gpsd_tx_sender = data_tx.clone();
+        let gpsd_config = Arc::clone(&shared_config);
+        let gpsd_token = cancel_token.clone();
+        let gpsd_gps_state = Arc::clone(&gps_state);
+
+        task_set.spawn(async move {
+            if let Err(e) = gpsd_task(gpsd_tx_sender, gpsd_token, gpsd_config, gpsd_gps_state).await {
+                error!("Unable to create gpsd task: {}", e);
+            }
+        });
+
+        expected_tasks += 1;
     }
 
 

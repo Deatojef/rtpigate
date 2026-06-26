@@ -261,6 +261,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpsd_proto"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "247df1fffe6bc378377d6cf894dac08aef2194a6c1c9e2f173c3c10979fa5ca5"
+dependencies = [
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -580,13 +592,14 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rtpigate"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "aprs-decode",
  "aprs-rtp",
  "axum",
  "chrono",
  "flexi_logger",
+ "gpsd_proto",
  "log",
  "serde",
  "serde_json",

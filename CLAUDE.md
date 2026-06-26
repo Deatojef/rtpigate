@@ -23,15 +23,17 @@ The application reads `config.toml` from the current working directory at startu
 
 **Async actor model using tokio with broadcast channels for inter-task communication.**
 
-Four concurrent tasks orchestrated in `main.rs`:
+Up to five concurrent tasks orchestrated in `main.rs`:
 
 1. **rtp_listener** (`packet.rs`) — Binds to UDP multicast, parses RTP headers and AX.25 frames, broadcasts `DataItem::Pkt` on a shared channel (capacity 128).
 
 2. **aprsis_task** (`aprsis.rs`) — Maintains persistent TCP connection to APRS-IS server with capped exponential backoff (5s→300s max). Consumes RF packets from broadcast channel, applies igating filter rules, and forwards to APRS-IS. Sends position beacons and telemetry on a configurable interval.
 
-3. **sse_task** (`sse.rs`) — Consumes `DataItem` packets and telemetry, serializes to JSON, pushes to an SSE broadcast channel (capacity 16). Event types: `rfpacket`, `inetpacket`, `packet_statistics`, `aprsis_statistics`.
+3. **sse_task** (`sse.rs`) — Consumes `DataItem` packets and telemetry, serializes to JSON, pushes to an SSE broadcast channel (capacity 16). Event types: `rfpacket`, `inetpacket`, `packet_statistics`, `aprsis_statistics`, `gps_status`.
 
-4. **HTTP server** (axum) — Listens on `127.0.0.1:3000`, serves `/sse` endpoint. Intended to sit behind Apache reverse proxy.
+4. **gpsd_task** (`gpsd.rs`) — Only spawned when `[location] source = "gpsd"`. Connects to gpsd over TCP (same backoff pattern as aprsis_task), reads newline-delimited JSON `TPV`/`SKY` reports, and keeps a shared `Arc<RwLock<Option<GpsFix>>>` updated for aprsis_task to source beacon position. Also broadcasts `gps_status` telemetry for the frontend.
+
+5. **HTTP server** (axum) — Listens on `127.0.0.1:3000`, serves `/sse` endpoint. Intended to sit behind Apache reverse proxy.
 
 Graceful shutdown via `CancellationToken` on SIGTERM/SIGINT.
 
@@ -45,7 +47,18 @@ Graceful shutdown via `CancellationToken` on SIGTERM/SIGINT.
 
 ## Configuration (config.toml)
 
-Sections: `[station]` (callsign), `[location]` (lat/lon/alt), `[aprsis]` (server, passcode, beacon/igate flags, symbol, telemetry interval), `[rtp]` (multicast host/port). Config traits `APRSISLogin` and `APRSISPasscode` are in `config.rs`.
+Sections: `[station]` (callsign), `[location]` (lat/lon/alt + `source`), `[aprsis]` (server, passcode, beacon/igate flags, symbol, telemetry interval, `dao` precision), `[rtp]` (multicast host/port), `[gpsd]` (GPSD connection + movement beaconing). Config traits `APRSISLogin` and `APRSISPasscode` are in `config.rs`.
+
+### Beacon DAO precision (`[aprsis] dao`)
+
+`DaoMode` controls the APRS 1.2 `!DAO!` precision token in `igate::positpacket()`: `"human"` (default, `!Wxy!`, ~1.85 m), `"base91"` (`!wxy!`, ~0.2 m), or `"off"` (base `ddmm.hh` only). The base position truncates to hundredths of a minute and the remainder feeds the token.
+
+### Position source (`[location] source`)
+
+- `source = "config"` (default) — beacon the fixed `[location]` lat/lon/alt (the RF-antenna location).
+- `source = "gpsd"` — beacon a live fix from gpsd. Behavior:
+  - **No-fix skip**: a position beacon is skipped when there is no fresh fix (2D/3D, newer than `GPS_FRESHNESS` = 30s); telemetry still sends. A `GpsFix` is "fresh" per `GpsFix::is_fresh()` in `config.rs`.
+  - **Movement beaconing**: a second timer (`gpsd.min_beacon_secs`, default 30s) beacons when lat/lon moves past `gpsd.move_threshold_deg` (default 0.0001°) since the last beacon — but never faster than `min_beacon_secs`. The fixed `aprsis.threshold` interval remains the upper floor (always beacons + telemetry at least that often when a fresh fix exists).
 
 ## Vendored Dependency
 

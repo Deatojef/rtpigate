@@ -108,6 +108,11 @@ header h1 {
     color: #aaa;
 }
 
+.status-indicator.warn {
+    background-color: #f9a825;
+    color: #000;
+}
+
 /* Theme toggle button */
 .theme-btn {
     font-family: inherit;
@@ -147,16 +152,22 @@ main {
     padding-bottom: 4px;
 }
 
-#config-grid {
+#config-grid,
+#gps-readout {
     display: flex;
     flex-wrap: wrap;
     gap: 4px 24px;
+}
+
+#gps-readout {
+    margin-top: 6px;
 }
 
 .config-item {
     display: flex;
     gap: 6px;
     white-space: nowrap;
+    align-items: baseline;
 }
 
 .config-label {

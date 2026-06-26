@@ -11,6 +11,7 @@ An APRS receive-only iGate for [KA9Q-Radio](http://www.ka9q.net/radio/) backend,
 - **Multi-slicer demodulator** — a bank of parallel amplitude-imbalance slicers (default 8) maximises decode rate across twisted/imbalanced audio
 - **Multi-frequency support** via KA9Q-Radio's RTP audio multicast stream
 - **Position beaconing** and **APRS telemetry** to APRS-IS
+- **GPSD position source** for mobile/portable operation — live position with movement-triggered, rate-limited beaconing and `!DAO!` precision (see [GPSD Position Source & Beacon Cadence](#gpsd-position-source--beacon-cadence))
 - **Real-time web dashboard** with Server-Sent Events (SSE)
   - Live packet table with APRS symbol icons, coordinates, and distance
   - Last-heard stations table sorted by packet count
@@ -27,7 +28,7 @@ An APRS receive-only iGate for [KA9Q-Radio](http://www.ka9q.net/radio/) backend,
 
 ## Architecture
 
-Four concurrent async tasks orchestrated with tokio:
+Up to five concurrent async tasks orchestrated with tokio (the GPSD task runs only when `[location] source = "gpsd"`):
 
 ```
                                                                      +-----------+
@@ -47,6 +48,7 @@ Four concurrent async tasks orchestrated with tokio:
 
 - **ka9q.rs** -- Subscribes to the KA9Q-Radio **audio** RTP multicast group via the `aprs-rtp` crate, which de-jitters the stream, demodulates the 1200-baud AFSK through a bank of parallel slicers, frames HDLC, validates the CRC, and parses AX.25. Each decoded frame's APRS payload (position, Mic-E, object, item, altitude, symbol) is then parsed with the `aprs-decode` crate and mapped to the internal packet type. Also aggregates per-slicer decode counts for the waterfall and reconnects with backoff on failure.
 - **aprs_is.rs** -- Maintains persistent TCP connection to APRS-IS with capped exponential backoff (5s to 300s). Handles login verification, beaconing, and telemetry.
+- **gpsd.rs** -- Optional GPSD client (spawned only when `[location] source = "gpsd"`). Connects to gpsd over TCP with the same backoff strategy, parses live `TPV`/`SKY` reports, and shares the latest fix with `aprs_is.rs` for movement-based beaconing. Also surfaces GPS health to the dashboard via a `gps_status` SSE event.
 - **igate.rs** -- Applies igating filter rules (rfonly, staleness, satellite, query, third-party, duplicates).
 - **sse.rs** -- Serializes packets and telemetry to JSON, pushes to SSE broadcast channel.
 - **axum HTTP server** -- Serves the web dashboard and SSE endpoint. Sits behind a reverse proxy.
@@ -146,9 +148,12 @@ name = "My APRS iGate"        # Optional. Displayed in web UI header and beacons
 verbose = false                # Optional. Enable debug-level logging.
 
 [location]
-lat = 30.123456                # Decimal degrees, -90 to 90. Required for beaconing.
-lon = -99.123456              # Decimal degrees, -180 to 180. Required for beaconing.
-alt = 1234                     # Altitude in feet. Required for beaconing.
+source = "config"              # "config" (default) beacons the fixed lat/lon/alt below;
+                               # "gpsd" beacons a live fix from gpsd (see [gpsd]).
+lat = 30.123456                # Decimal degrees, -90 to 90. RF-antenna location.
+                               # Required for beaconing when source = "config".
+lon = -99.123456              # Decimal degrees, -180 to 180.
+alt = 1234                     # Altitude in feet.
 
 [aprsis]
 host = "noam.aprs2.net"       # APRS-IS server hostname. Required when enabled.
@@ -160,12 +165,22 @@ beaconing = true               # Send position beacons. Requires valid passcode 
 symbol = "\\&"                 # APRS symbol: table char + code char (backslash escaped).
 overlay = "R"                  # Symbol overlay character. Omit for primary table symbols.
 threshold = 600                # Beacon/telemetry interval in seconds (default: 600 = 10min).
+dao = "human"                  # !DAO! beacon precision: "human" (~1.85m, default),
+                               # "base91" (~0.2m), or "off". See DAO precision below.
 
 [rtp]
 host = "packet.local"          # KA9Q-Radio AUDIO multicast hostname or IP. Required.
                                # Point this at the channel's PCM audio group,
                                # NOT an AX.25/packetd frame group.
 port = 5004                    # KA9Q-Radio multicast UDP port. Required.
+
+[gpsd]                         # Optional section. Only used when [location] source = "gpsd".
+host = "localhost"             # gpsd hostname or IP (default: localhost).
+port = 2947                    # gpsd TCP port (default: 2947).
+move_threshold_deg = 0.0001    # Beacon when lat or lon moves more than this many
+                               # degrees since the last beacon (default: 0.0001 deg).
+min_beacon_secs = 30           # Minimum seconds between movement-triggered beacons
+                               # (default: 30). Caps position-beacon frequency.
 
 [satellite]                    # Optional section. Defaults to [145.825] if omitted.
 frequencies = [145.825]        # Frequencies (MHz) treated as satellite downlinks.
@@ -185,7 +200,9 @@ At startup, the application validates the config and exits with clear error mess
 - RTP host is empty or port is 0
 - Latitude or longitude is out of range
 - APRS-IS is enabled but host or port is missing
-- Beaconing is enabled but location (lat, lon, alt) is incomplete
+- Beaconing is enabled with `source = "config"` but location (lat, lon, alt) is incomplete
+  (with `source = "gpsd"` the live fix supplies the position, so static lat/lon/alt are optional)
+- `[gpsd] move_threshold_deg` or `min_beacon_secs` is not greater than zero
 - Passcode is invalid when igating or beaconing is enabled
 
 ### APRS-IS Passcode
@@ -210,6 +227,57 @@ Common examples:
 | `"/#"` | -- | Digipeater |
 | `"\\&"` | `"R"` | R-overlay gateway |
 | `"\\&"` | `"I"` | I-overlay gateway |
+
+## GPSD Position Source & Beacon Cadence
+
+By default (`[location] source = "config"`) rtpigate beacons the fixed `lat`/`lon`/`alt`
+from the `[location]` section — the **RF-antenna location**. A fixed iGate that happens
+to have a GPS attached should keep `source = "config"`; gpsd is then never consulted for
+beaconing.
+
+Set `source = "gpsd"` for mobile/portable use. rtpigate connects to gpsd (per the `[gpsd]`
+section), tracks the live fix, and beacons it. The `[location]` values are then only a
+fallback; a beacon is **skipped** whenever there is no fresh fix (a valid 2D/3D solution
+seen within the last 30 seconds), so a stale position is never transmitted.
+
+### When each transmission to APRS-IS occurs
+
+Position beacons and telemetry are decoupled. Position can transmit frequently as you move
+(but is rate-limited); telemetry only ever transmits on the fixed `threshold` interval.
+
+| Transmission | Trigger | Cap / interval | Config element |
+|---|---|---|---|
+| **Position beacon** (moving) | position moved more than `move_threshold_deg` since the last beacon | no faster than `min_beacon_secs` (default 30s) | `[gpsd] move_threshold_deg`, `[gpsd] min_beacon_secs` |
+| **Position beacon** (floor) | the fixed interval tick | every `threshold` (default 600s) | `[aprsis] threshold` |
+| **Telemetry** | the fixed interval tick **only** | every `threshold` | `[aprsis] threshold` |
+
+Notes:
+
+- The **floor** guarantees a stationary station (or one that hasn't moved past the
+  threshold) still beacons its position and telemetry at least once per `threshold`.
+- With `source = "config"` only the floor applies — there is no movement trigger, so the
+  station beacons position + telemetry every `threshold`.
+- The movement trigger and `min_beacon_secs` cap apply to **position beacons only**;
+  telemetry is never sent on a position change.
+
+### DAO precision
+
+The base `ddmm.hh` APRS position is quantized to hundredths of a minute (~18.5 m). The
+APRS 1.2 `!DAO!` extension (WGS84) carries additional precision the base format drops;
+DAO-aware clients (e.g. aprs.fi) plot the refined position while older clients ignore the
+token. Choose the encoding with `[aprsis] dao` (applies to both `config` and `gpsd`
+position sources):
+
+| `dao` | Token | Added precision | Use when |
+|-------|-------|-----------------|----------|
+| `"human"` (default) | `!Wxy!` (`x`,`y` = `0`–`9`) | one extra digit of minutes (~1.85 m) | typical GPS; broadly legible in raw frames |
+| `"base91"` | `!wxy!` (`x`,`y` = base-91) | ~1/91 of the last base digit (~0.2 m) | well-surveyed fixed station or a high-precision/RTK receiver |
+| `"off"` | — | none (base `ddmm.hh` only) | maximum compatibility, or to avoid implying sub-fix precision |
+
+Note that DAO encodes *format* precision, not accuracy — `base91` can represent ~0.2 m even
+when the underlying fix is only accurate to a few metres. rtpigate is the lossless link:
+the source position (e.g. GPSD's full-precision lat/lon) is preserved up to the limit of the
+chosen encoding.
 
 ## Reverse Proxy Setup
 

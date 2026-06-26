@@ -1,6 +1,6 @@
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, timeout, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, sync::Arc};
+use std::{collections::{HashMap, VecDeque}, sync::{Arc, RwLock}};
 use chrono::{Local, Utc};
 use socket2::{SockRef, TcpKeepalive};
 
@@ -13,14 +13,67 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
-use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem};
+use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem, GpsFix, Location, PositionSource, DaoMode};
 use crate::error::RtpigateError;
 use crate::ka9q::Packet;
 use crate::igate::{self, TOCALL, AnalogItem, APRSQuadratic, Telemetry};
 
 
+/// Builds and writes a position beacon for `loc` to the APRS-IS server. Returns
+/// `true` if the connection is still healthy (the beacon was sent, or skipped due
+/// to an invalid position), and `false` if the write failed/timed out and the
+/// caller should reconnect.
+async fn send_position_beacon(
+    write_half: &mut tcp::OwnedWriteHalf,
+    loc: &Location,
+    callsign: &str,
+    name: &str,
+    symbol: &Option<String>,
+    overlay: &Option<String>,
+    dao: DaoMode,
+) -> bool {
+    let posit_text = match igate::positpacket(loc, callsign, name, symbol, overlay, dao) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("Error creating position packet: {}. Skipping beacon.", e);
+            return true; // not a connection failure — keep the connection
+        },
+    };
+
+    info!("xmitting: {}", posit_text);
+    match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", posit_text).as_bytes())).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!("Write to APRS-IS failed: {}", e);
+            false
+        },
+        Err(_elapsed) => {
+            warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
+            false
+        },
+    }
+}
+
+/// Resolves the beacon location from the latest GPSD fix, or `None` if there is
+/// no fresh fix. Altitude falls back to the configured value when the fix lacks one.
+fn gpsd_beacon_location(gps_state: &RwLock<Option<GpsFix>>, fallback_alt: Option<f64>) -> Option<Location> {
+    let guard = gps_state.read().ok()?;
+    let fix = guard.as_ref()?;
+    if fix.is_fresh() {
+        Some(Location {
+            lat: fix.lat,
+            lon: fix.lon,
+            alt: fix.alt_ft.or(fallback_alt),
+            source: PositionSource::Gpsd,
+        })
+    } else {
+        None
+    }
+}
+
+
 /// Main APRS-IS task: manages the TCP connection and coordinates igating, beaconing, and telemetry.
-pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>) -> Result<(), RtpigateError> {
+pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>, gps_state: Arc<RwLock<Option<GpsFix>>>) -> Result<(), RtpigateError> {
 
     info!("Started");
 
@@ -120,8 +173,21 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let symbol = config.aprsis.symbol.clone();
     let overlay = config.aprsis.overlay.clone();
 
-    // station location
+    // !DAO! precision mode for position beacons
+    let dao_mode = config.dao_mode();
+
+    // station location and where the beacon position comes from
     let location = config.location.clone();
+    let position_source = config.location.source;
+
+    // movement-beaconing parameters (only used when source == Gpsd)
+    let gpsd_cfg = config.gpsd_config();
+    let move_threshold_deg = gpsd_cfg.move_threshold_deg();
+    let min_beacon_secs = gpsd_cfg.min_beacon_secs();
+
+    // lat/lon last actually beaconed — drives the movement trigger and avoids
+    // duplicate beacons. Updated whenever a position beacon is sent.
+    let mut last_beacon_pos: Option<(f64, f64)> = None;
 
     // is this connection to the APRS-IS server read-only (i.e. passcode = -1) or read-write with a valid passcode?
     let rw = config.passcode_isvalid();
@@ -142,6 +208,11 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
     // interval object for triggering telemetry/beacon packets to APRS-IS
     let mut time_interval = interval(Duration::from_secs(telemetry_threshold));
+
+    // movement-evaluation interval for the GPSD source. Its period is also the
+    // minimum spacing between movement-triggered beacons, so a fast mover can
+    // never beacon faster than `min_beacon_secs`. Harmless when source != Gpsd.
+    let mut move_interval = interval(Duration::from_secs(min_beacon_secs));
 
     // telemetry sequence filename
     let telemetry_file = "/tmp/telem-seq.txt";
@@ -507,26 +578,25 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                     // only sends data to APRS-IS if beaconing is configured and igating.
                     if beaconing && rw {
 
-                        // create a posit packet for sending to the APRS-IS server
-                        let posit_text = match igate::positpacket(&location, &callsign, &station_name, &symbol, &overlay) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                warn!("Error creating position packet: {}. Skipping beacon.", e);
-                                continue;
-                            },
+                        // Resolve the beacon position. For the config source this is
+                        // always the static location; for the GPSD source it is the
+                        // live fix, or None when there is no fresh fix (skip beacon).
+                        let beacon_loc = match position_source {
+                            PositionSource::Config => Some(location.clone()),
+                            PositionSource::Gpsd => gpsd_beacon_location(&gps_state, location.alt),
                         };
 
-                        // transmit this position packet to the aprsis server.
-                        info!("xmitting: {}", posit_text);
-                        match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", posit_text).as_bytes())).await {
-                            Ok(Ok(())) => {},
-                            Ok(Err(e)) => {
-                                warn!("Write to APRS-IS failed: {}", e);
-                                break;
+                        match beacon_loc {
+                            Some(loc) => {
+                                if !send_position_beacon(&mut write_half, &loc, &callsign, &station_name, &symbol, &overlay, dao_mode).await {
+                                    break;
+                                }
+                                if let (Some(la), Some(lo)) = (loc.lat, loc.lon) {
+                                    last_beacon_pos = Some((la, lo));
+                                }
                             },
-                            Err(_elapsed) => {
-                                warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
-                                break;
+                            None => {
+                                debug!("No fresh GPS fix; skipping position beacon (telemetry still sent)");
                             },
                         }
 
@@ -608,6 +678,32 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                         heard_direct = 0;
                         received_other = 0;
                         received_sat = 0;
+                    }
+                },
+
+                // GPSD movement-triggered beacon. Fires no faster than
+                // `min_beacon_secs`; beacons only when the live position has moved
+                // beyond `move_threshold_deg` since the last beacon. Position only —
+                // telemetry stays on the fixed interval above.
+                _ = move_interval.tick(), if position_source == PositionSource::Gpsd && beaconing && rw => {
+
+                    if let Some(loc) = gpsd_beacon_location(&gps_state, location.alt) {
+                        let moved = match (last_beacon_pos, loc.lat, loc.lon) {
+                            (Some((plat, plon)), Some(la), Some(lo)) =>
+                                (la - plat).abs() > move_threshold_deg || (lo - plon).abs() > move_threshold_deg,
+                            // no prior beacon yet, but we have a fresh fix — beacon now
+                            (None, Some(_), Some(_)) => true,
+                            _ => false,
+                        };
+
+                        if moved {
+                            if !send_position_beacon(&mut write_half, &loc, &callsign, &station_name, &symbol, &overlay, dao_mode).await {
+                                break;
+                            }
+                            if let (Some(la), Some(lo)) = (loc.lat, loc.lon) {
+                                last_beacon_pos = Some((la, lo));
+                            }
+                        }
                     }
                 }
 

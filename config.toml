@@ -12,15 +12,26 @@ verbose = false
 
 
 ###########################################
-# The [location] section specifies the location and altitude (in feet) of this station's location
+# The [location] section specifies the RF-antenna location and altitude (in feet)
+# of this station. These coordinates are the location beaconed to APRS-IS when
+# source = "config".
 ###########################################
 [location]
 
-# station's location in decimal degrees
+# Where the beacon position comes from:
+#   "config" (default) - beacon the fixed lat/lon/alt below (RF-antenna location).
+#                        A fixed igate that happens to have a GPS attached should
+#                        use this; GPSD is then not consulted for beaconing.
+#   "gpsd"             - beacon a live fix from gpsd (mobile/portable). The lat/lon/
+#                        alt below then only serve as a bootstrap/fallback; with no
+#                        fresh fix the position beacon is skipped. See [gpsd] below.
+source = "config"
+
+# station's RF-antenna location in decimal degrees
 lat = 40.123
 lon = -103.123
 
-# station's altitude is in feet 
+# station's altitude is in feet
 alt = 1234
 
 
@@ -58,6 +69,13 @@ igating = false
 # how often to send telemetry and position beacons in seconds if igating or beaconing respectively
 threshold = 600
 
+# Positional precision encoded in position beacons via the APRS 1.2 !DAO! extension:
+#   "human"  (default) - human-readable !Wxy! form, ~1.85 m. Broadly legible.
+#   "base91"           - base-91 !wxy! form, ~0.2 m. Best for a well-surveyed fixed
+#                        station or a high-precision receiver.
+#   "off"              - no !DAO! token; base ddmm.hh position only (~18.5 m).
+dao = "human"
+
 
 ###########################################
 # The [rtp] section specifies the hostname and port for listening to packets coming from the ka9q-radio backend.
@@ -65,6 +83,28 @@ threshold = 600
 [rtp]
 host = "packet.local"
 port = 5004
+
+
+###########################################
+# The [gpsd] section configures the GPSD position source. It is only consulted
+# when [location] source = "gpsd"; the whole section may be omitted to accept the
+# defaults shown below.
+###########################################
+[gpsd]
+
+# gpsd connection (defaults: localhost:2947)
+host = "localhost"
+port = 2947
+
+# Movement-triggered beaconing. When moving, the station beacons as soon as its
+# latitude or longitude changes by more than move_threshold_deg (degrees) since
+# the last beacon, instead of only on the fixed `threshold` interval above.
+move_threshold_deg = 0.0001
+
+# Minimum seconds between movement-triggered beacons. Caps how often a fast mover
+# can beacon so APRS-IS isn't flooded (default 30). The fixed `threshold` interval
+# still guarantees a beacon + telemetry at least that often when a fresh fix exists.
+min_beacon_secs = 30
 
 
 ###########################################

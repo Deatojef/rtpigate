@@ -39,7 +39,9 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
 - Spawns async tasks into a `JoinSet`:
   1. `rtp_listener` (always)
   2. `aprsis_task` (only if `[aprsis] enabled = true`)
-  3. `sse_task` (always)
+  3. `gpsd_task` (only if `[location] source = "gpsd"`)
+  4. `sse_task` (always)
+- Creates a shared latest-GPS-fix slot (`Arc<RwLock<Option<GpsFix>>>`) written by `gpsd_task` and read by `aprsis_task` for movement-based beaconing. Stays `None` when GPSD is not the position source.
 - Starts the axum HTTP server (listen address from `[http] listen`, default `127.0.0.1:3000`).
 - **Routes:**
   - `GET /api/sse` — SSE stream endpoint
@@ -80,8 +82,17 @@ Owns the persistent TCP connection and everything that writes to APRS-IS.
   - Calls `igate::droppacket()`; on `Some(reason)` increments the matching per-reason lifetime drop counter and skips the packet.
   - **Duplicate suppression** (lives here, not in `igate.rs`): a `HashMap` keyed `source:info` with a 30s TTL, purged on the telemetry tick.
   - Reforms the packet with `RTPPacket::for_rxigate()` using the **`qAO`** construct (`SRC>DST,path,qAO,IGATECALL:info`), re-checks for embedded CR/LF (defense in depth), and writes it.
-- **Beaconing** (when `beaconing` and valid passcode): sends a position beacon built by `igate::positpacket()` every `[aprsis] threshold` seconds (default 600).
-- **Telemetry**: on the same interval, emits an APRS telemetry report (T#/EQNS/PARM/UNIT/BITS) with five analog parameters, encoded via `APRSQuadratic` (see `igate.rs`):
+- **Beaconing** (when `beaconing` and valid passcode): sends a position beacon built by `igate::positpacket()`. Position source depends on `[location] source`:
+  - **`config`**: beacons the static `[location]` lat/lon/alt every `[aprsis] threshold` seconds.
+  - **`gpsd`**: a second timer (`min_beacon_secs`, default 30) beacons the live fix when it has moved more than `move_threshold_deg` since the last beacon — never faster than `min_beacon_secs`. The `[aprsis] threshold` tick remains a floor that also beacons (and, unlike the movement timer, carries telemetry). A beacon is skipped when there is no fresh fix (`GpsFix::is_fresh()`: a valid 2D/3D solution within `GPS_FRESHNESS` = 30s). The fix is read from the shared `Arc<RwLock<Option<GpsFix>>>` written by `gpsd_task`.
+
+  | Transmission | Trigger | Cap / interval |
+  |---|---|---|
+  | Position (moving, gpsd) | moved > `move_threshold_deg` | no faster than `min_beacon_secs` |
+  | Position (floor) | `threshold` tick | every `[aprsis] threshold` |
+  | Telemetry | `threshold` tick only | every `[aprsis] threshold` |
+
+- **Telemetry**: on the `threshold` tick **only** (never on a movement beacon), emits an APRS telemetry report (T#/EQNS/PARM/UNIT/BITS) with five analog parameters, encoded via `APRSQuadratic` (see `igate.rs`):
 
   | PARM | Units | Source |
   |------|-------|--------|
@@ -93,6 +104,14 @@ Owns the persistent TCP connection and everything that writes to APRS-IS.
 
   The telemetry sequence number persists to `/tmp/telem-seq.txt` across restarts (not reboots).
 - Emits `aprsis_statistics` telemetry (rf-received / igated / dropped / reconnects series + lifetime counters, including per-reason drop and channel-lag drop breakdowns) on the 15s tick.
+
+### `gpsd.rs` — GPSD Position Source (optional)
+Spawned only when `[location] source = "gpsd"`. Provides the live position for mobile/portable beaconing.
+
+- Persistent TCP connection to `[gpsd] host:port` (default `localhost:2947`) with the same capped exponential backoff and bounded timeouts as `aprs_is.rs`. Sends gpsd's `?WATCH={"enable":true,"json":true}` on connect.
+- Reads gpsd's newline-delimited JSON via a tokio `BufReader`, parsing each line into `gpsd_proto::UnifiedResponse`. `TPV` updates position/altitude (MSL metres → feet)/mode; `SKY` updates HDOP and the used/visible satellite counts (from the `satellites` array, or scalar `uSat`/`nSat` when gpsd emits a summary SKY).
+- Merges `TPV`/`SKY` into a rolling `GpsFix` and writes it to the shared `Arc<RwLock<Option<GpsFix>>>`. `received_at` is a monotonic `Instant` (set on each `TPV`) used by `GpsFix::is_fresh()` for the 30s staleness guard, independent of wall-clock skew.
+- Broadcasts a `gps_status` `AppTelemetry` for the dashboard on every update, and logs one INFO line when the fix **state** changes (no fix ↔ 2D ↔ 3D) rather than on every report.
 
 ### `igate.rs` — Filtering Rules & Packet Construction
 Pure functions and encoders; holds no connection state.
@@ -108,7 +127,7 @@ Pure functions and encoders; holds no connection state.
   | `SatelliteDirect` | heard non-digipeated on a satellite frequency and not from a known satellite |
 
   Known satellites: `RS0ISS`, `NA1SS`, `DP0ISS`, `OR4ISS`, `IR0ISS`, `DP0SNX`. (Duplicate suppression is **not** here — it lives in `aprs_is.rs`.)
-- `positpacket()` builds the beacon: `CALL>APZJD1,TCPIP*:/HHMMSSh{lat}{overlay}{lon}{symbol}/A={alt}{name}` with lat/lon in APRS degrees-decimal-minutes. `TOCALL = "APZJD1"` (`APZ` = experimental, `JD1` = version).
+- `positpacket()` builds the beacon: `CALL>APZJD1,TCPIP*:/HHMMSSh{lat}{overlay}{lon}{symbol}/A={alt}{name}{dao}` with lat/lon in APRS degrees-decimal-minutes. The base position is truncated to hundredths of a minute (~18.5 m); the sub-hundredth remainder is encoded into an optional APRS 1.2 `!DAO!` token per `[aprsis] dao` (`DaoMode`): `Human` → `!Wxy!` (one extra digit, ~1.85 m), `Base91` → `!wxy!` (base-91 char, ~0.2 m, via `base91_dao_char()`), `Off` → no token. `TOCALL = "APZJD1"` (`APZ` = experimental, `JD1` = version).
 - `APRSQuadratic` / `AnalogItem` / `Telemetry` encode arbitrary values into APRS telemetry's quadratic `EQNS` form (`value = a·x² + b·x + c`), keeping raw counts recoverable on the receiving side.
 - Telemetry sequence file helpers (`read_telemetry_file`, `write_telemetry_seq`).
 
@@ -121,11 +140,12 @@ Pure functions and encoders; holds no connection state.
   - `aprsis_statistics` — APRS-IS / igate telemetry
   - `slicer_statistics` — slicer-diversity waterfall telemetry
   - `station_statistics` — last-heard stations + frequency tables
+  - `gps_status` — live GPS fix/health (only when `[location] source = "gpsd"`)
   - (`config` is emitted directly from `main.rs` on SIGHUP, not via `sse.rs`.)
 
 ### `config.rs` — Configuration & Telemetry Types
-- Deserializes `config.toml` via the `toml` crate. Sections: `[station]`, `[location]`, `[aprsis]`, `[rtp]`, optional `[satellite]`, optional `[http]`.
-- `Config::validate()` returns a list of human-readable errors (callsign, RTP host/port, lat/lon ranges, APRS-IS host/port when enabled, location completeness when beaconing, HTTP listen format).
+- Deserializes `config.toml` via the `toml` crate. Sections: `[station]`, `[location]` (incl. `source`), `[aprsis]`, `[rtp]`, optional `[satellite]`, optional `[http]`, optional `[gpsd]`.
+- `Config::validate()` returns a list of human-readable errors (callsign, RTP host/port, lat/lon ranges, APRS-IS host/port when enabled, location completeness when beaconing with `source = "config"`, positive `[gpsd]` thresholds, HTTP listen format).
 - `Config::to_public()` produces `PublicConfig` (passcode and other secrets stripped) for `/api/config` and SSE.
 - `Config::satellite_frequencies()` returns `[satellite] frequencies`, defaulting to `[145.825]`.
 - Traits: `APRSISLogin` (login string) and `APRSISPasscode` (`compute_passcode` via the standard XOR hash + `passcode_isvalid`).
@@ -149,6 +169,7 @@ enum AppTelemetry {
     AprsisStatus(AprsisTelemetry),
     SlicerStatus(SlicerTelemetry),
     StationStatus(StationTelemetry),
+    GpsStatus(GpsTelemetry),        // only when [location] source = "gpsd"
 }
 ```
 

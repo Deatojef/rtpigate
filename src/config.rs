@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fs, ops::Add};
-use chrono::{DateTime, Local};
+use std::{collections::VecDeque, fs, ops::Add, time::{Duration, Instant}};
+use chrono::{DateTime, Local, Utc};
 
 use crate::error::RtpigateError;
 
@@ -20,6 +20,54 @@ pub enum AppTelemetry {
     AprsisStatus(AprsisTelemetry),
     SlicerStatus(SlicerTelemetry),
     StationStatus(StationTelemetry),
+    GpsStatus(GpsTelemetry),
+}
+
+/// Maximum age of a GPS fix before it is considered stale and unusable for
+/// beaconing. Keeps a mobile station from ever transmitting an outdated position.
+pub const GPS_FRESHNESS: Duration = Duration::from_secs(30);
+
+/// Latest position/fix from GPSD, shared (behind an RwLock) between `gpsd_task`
+/// (writer) and `aprsis_task` (reader). `received_at` is a monotonic local clock
+/// used for the freshness guard; GPSD's own `time` is display-only.
+#[derive(Debug, Clone)]
+pub struct GpsFix {
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub alt_ft: Option<f64>,
+    pub mode: u8,               // 1 = no fix, 2 = 2D, 3 = 3D
+    pub sats_used: u32,
+    pub sats_visible: u32,
+    pub hdop: Option<f64>,
+    pub time: Option<DateTime<Utc>>,
+    pub received_at: Instant,
+}
+
+impl GpsFix {
+    /// A fix is usable for beaconing only when it is recent, has at least a 2D
+    /// solution, and carries a lat/lon.
+    pub fn is_fresh(&self) -> bool {
+        self.received_at.elapsed() < GPS_FRESHNESS
+            && self.mode >= 2
+            && self.lat.is_some()
+            && self.lon.is_some()
+    }
+}
+
+/// Snapshot of GPS health pushed to the frontend via the `gps_status` SSE event.
+#[derive(Serialize, Debug, Clone)]
+pub struct GpsTelemetry {
+    pub name: String,                   // "gps_status"
+    pub timestamp: DateTime<Local>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub alt_ft: Option<f64>,
+    pub mode: u8,
+    pub sats_used: u32,
+    pub sats_visible: u32,
+    pub hdop: Option<f64>,
+    pub time: Option<DateTime<Utc>>,
+    pub fresh: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -144,6 +192,7 @@ pub struct Config {
     pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
     pub decoder: Option<DecoderSettings>,
+    pub gpsd: Option<GpsdConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -160,13 +209,83 @@ pub struct StationConfig {
     pub verbose: Option<bool>,
 }
 
+/// Where the beacon position comes from.
+///
+/// - `Config` (default): use the static `[location]` lat/lon/alt below — the
+///   fixed RF-antenna location. A fixed igate that happens to have a GPS attached
+///   selects this, and GPSD is never consulted for beaconing.
+/// - `Gpsd`: track a live fix from GPSD (mobile/portable). `[location]` is then
+///   only a bootstrap/fallback; with no fresh fix the position beacon is skipped.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PositionSource {
+    #[default]
+    Config,
+    Gpsd,
+}
+
+/// The station's configured location. `lat`/`lon`/`alt` describe the **RF-antenna
+/// location** and are used to beacon when `source = "config"` (and as a GPSD
+/// bootstrap/fallback when `source = "gpsd"`). `alt` is in feet.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Location {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub alt: Option<f64>,
+    #[serde(default)]
+    pub source: PositionSource,
 }
 
+/// Connection and beaconing settings for the GPSD position source. Only consulted
+/// when `[location] source = "gpsd"`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct GpsdConfig {
+    pub host: Option<String>,            // default "localhost"
+    pub port: Option<u16>,               // default 2947
+    pub move_threshold_deg: Option<f64>, // default 0.0001 — beacon when |Δlat| or |Δlon| exceeds this
+    pub min_beacon_secs: Option<u64>,    // default 30 — minimum spacing between movement beacons
+}
+
+impl GpsdConfig {
+    pub const DEFAULT_HOST: &'static str = "localhost";
+    pub const DEFAULT_PORT: u16 = 2947;
+    pub const DEFAULT_MOVE_THRESHOLD_DEG: f64 = 0.0001;
+    pub const DEFAULT_MIN_BEACON_SECS: u64 = 30;
+
+    pub fn host(&self) -> String {
+        match &self.host {
+            Some(h) if !h.is_empty() => h.clone(),
+            _ => Self::DEFAULT_HOST.to_string(),
+        }
+    }
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(Self::DEFAULT_PORT)
+    }
+    pub fn move_threshold_deg(&self) -> f64 {
+        self.move_threshold_deg.unwrap_or(Self::DEFAULT_MOVE_THRESHOLD_DEG)
+    }
+    pub fn min_beacon_secs(&self) -> u64 {
+        self.min_beacon_secs.unwrap_or(Self::DEFAULT_MIN_BEACON_SECS)
+    }
+}
+
+
+/// How much positional precision to encode in beacon position packets via the
+/// APRS 1.2 `!DAO!` extension.
+///
+/// - `Human` (default): human-readable `!Wxy!` form — one extra digit of minutes
+///   (~1.85 m). Broadly legible and widely supported.
+/// - `Base91`: base-91 `!wxy!` form — ~1/91 of the last base digit (~0.2 m). Best
+///   for a well-surveyed fixed station or a high-precision receiver.
+/// - `Off`: no `!DAO!` token; the base `ddmm.hh` position only (~18.5 m).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DaoMode {
+    Off,
+    #[default]
+    Human,
+    Base91,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct AprsisConfig {
@@ -179,6 +298,7 @@ pub struct AprsisConfig {
     pub symbol: Option<String>,
     pub overlay: Option<String>,
     pub threshold: Option<u64>,
+    pub dao: Option<DaoMode>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -215,6 +335,7 @@ pub struct AprsisConfigPublic {
     pub symbol: Option<String>,
     pub overlay: Option<String>,
     pub threshold: Option<u64>,
+    pub dao: DaoMode,
 }
 
 /// Sanitized config for the frontend (no secrets)
@@ -225,6 +346,9 @@ pub struct PublicConfig {
     pub aprsis: AprsisConfigPublic,
     pub rtp: RtpConfig,
     pub satellite_frequencies: Vec<f64>,
+    /// Effective GPSD settings (defaults resolved), present only when
+    /// `[location] source = "gpsd"`.
+    pub gpsd: Option<GpsdConfig>,
     pub started_at: Option<DateTime<Local>>,
 }
 
@@ -242,11 +366,31 @@ impl Config {
                 symbol: self.aprsis.symbol.clone(),
                 overlay: self.aprsis.overlay.clone(),
                 threshold: self.aprsis.threshold,
+                dao: self.dao_mode(),
             },
             rtp: self.rtp.clone(),
             satellite_frequencies: self.satellite_frequencies(),
+            // expose the effective (defaults-resolved) GPSD settings only when it
+            // is the position source
+            gpsd: if self.location.source == PositionSource::Gpsd {
+                let g = self.gpsd_config();
+                Some(GpsdConfig {
+                    host: Some(g.host()),
+                    port: Some(g.port()),
+                    move_threshold_deg: Some(g.move_threshold_deg()),
+                    min_beacon_secs: Some(g.min_beacon_secs()),
+                })
+            } else {
+                None
+            },
             started_at: None,
         }
+    }
+
+    /// Returns the configured `!DAO!` precision mode for beacons, defaulting to
+    /// human-readable when `[aprsis] dao` is omitted.
+    pub fn dao_mode(&self) -> DaoMode {
+        self.aprsis.dao.unwrap_or_default()
     }
 
     /// Builds the aprs-rtp `DecoderConfig`, starting from the crate defaults and
@@ -267,6 +411,12 @@ impl Config {
             }
         }
         decoder
+    }
+
+    /// Returns the effective GPSD settings, falling back to defaults when the
+    /// optional `[gpsd]` section is omitted.
+    pub fn gpsd_config(&self) -> GpsdConfig {
+        self.gpsd.clone().unwrap_or_default()
     }
 
     /// Returns the configured satellite frequencies, or a default of [145.825]
@@ -345,13 +495,31 @@ impl Config {
                 errors.push("[aprsis] port is required when aprsis is enabled".into());
             }
 
-            // If beaconing is enabled, location is required
-            if self.aprsis.beaconing == Some(true) {
+            // If beaconing is enabled with the static config source, a fixed
+            // location is required. With the GPSD source the position comes from
+            // the live fix, so the static lat/lon/alt are optional.
+            if self.aprsis.beaconing == Some(true) && self.location.source == PositionSource::Config {
                 if self.location.lat.is_none() || self.location.lon.is_none() {
                     errors.push("[location] lat and lon are required when beaconing is enabled".into());
                 }
                 if self.location.alt.is_none() {
                     errors.push("[location] alt is required when beaconing is enabled".into());
+                }
+            }
+        }
+
+        // GPSD validation — only meaningful when GPSD is the position source
+        if self.location.source == PositionSource::Gpsd {
+            if let Some(ref gpsd) = self.gpsd {
+                if let Some(threshold) = gpsd.move_threshold_deg {
+                    if threshold <= 0.0 {
+                        errors.push(format!("[gpsd] move_threshold_deg {} must be > 0", threshold));
+                    }
+                }
+                if let Some(secs) = gpsd.min_beacon_secs {
+                    if secs == 0 {
+                        errors.push("[gpsd] min_beacon_secs must be > 0".into());
+                    }
                 }
             }
         }
@@ -446,4 +614,49 @@ fn passcode(callsign: &str) -> i32 {
     }
 
     hash & 0x7fff
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fix(mode: u8, lat: Option<f64>, lon: Option<f64>, age: Duration) -> GpsFix {
+        GpsFix {
+            lat, lon, alt_ft: None, mode,
+            sats_used: 0, sats_visible: 0, hdop: None, time: None,
+            received_at: Instant::now() - age,
+        }
+    }
+
+    #[test]
+    fn fresh_3d_fix_is_usable() {
+        assert!(fix(3, Some(40.0), Some(-103.0), Duration::from_secs(1)).is_fresh());
+    }
+
+    #[test]
+    fn stale_fix_is_not_fresh() {
+        // older than GPS_FRESHNESS even though it is a valid 3D fix
+        assert!(!fix(3, Some(40.0), Some(-103.0), GPS_FRESHNESS + Duration::from_secs(5)).is_fresh());
+    }
+
+    #[test]
+    fn nofix_and_missing_coords_are_not_fresh() {
+        assert!(!fix(1, Some(40.0), Some(-103.0), Duration::from_secs(1)).is_fresh()); // no fix
+        assert!(!fix(3, None, Some(-103.0), Duration::from_secs(1)).is_fresh());       // missing lat
+    }
+
+    #[test]
+    fn position_source_defaults_to_config() {
+        assert_eq!(PositionSource::default(), PositionSource::Config);
+    }
+
+    #[test]
+    fn gpsd_config_applies_defaults_when_empty() {
+        let g = GpsdConfig::default();
+        assert_eq!(g.host(), "localhost");
+        assert_eq!(g.port(), 2947);
+        assert_eq!(g.min_beacon_secs(), 30);
+        assert!((g.move_threshold_deg() - 0.0001).abs() < f64::EPSILON);
+    }
 }

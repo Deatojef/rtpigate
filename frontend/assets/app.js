@@ -20,6 +20,13 @@
     var sseStatus = document.getElementById("sse-status");
     var rtpStatus = document.getElementById("rtp-status");
     var aprsisStatus = document.getElementById("aprsis-status");
+    var gpsStatus = document.getElementById("gps-status");
+    var gpsReadout = document.getElementById("gps-readout");
+
+    // Whether the backend sources its beacon position from GPSD (cfg.location.source).
+    // When true, the live GPS fix drives the station position used for distance
+    // calculations, and the GPS status chip/readout are shown.
+    var positionSourceGpsd = false;
 
     // Statistic value elements
     var statRfDirect = document.getElementById("stat-rf-direct");
@@ -571,7 +578,13 @@
     // ---- Apply config to UI ----
 
     function applyConfig(cfg) {
-        // Set station location for distance calculations
+        // Is the beacon position sourced from GPSD? The live fix then drives
+        // stationLat/stationLon (see the gps_status handler).
+        positionSourceGpsd = !!(cfg.location && cfg.location.source === "gpsd");
+        gpsStatus.style.display = positionSourceGpsd ? "" : "none";
+
+        // Set station location for distance calculations. With the GPSD source the
+        // live fix takes over; only seed from config when it carries coordinates.
         if (cfg.location && cfg.location.lat != null && cfg.location.lon != null) {
             stationLat = cfg.location.lat;
             stationLon = cfg.location.lon;
@@ -613,6 +626,10 @@
                 items.push(["Coordinates", { type: "coords", lat: cfg.location.lat, lon: cfg.location.lon, label: stationCall }]);
             }
             if (cfg.location.alt != null) items.push(["Altitude", cfg.location.alt + " ft"]);
+            if (cfg.location.source) items.push(["Position Source", cfg.location.source === "gpsd" ? "GPSD" : "Config"]);
+        }
+        if (cfg.gpsd && cfg.gpsd.host) {
+            items.push(["GPSD Host", cfg.gpsd.host + ":" + (cfg.gpsd.port || 2947)]);
         }
         if (cfg.aprsis) {
             if (cfg.aprsis.host) items.push(["APRS-IS Host", cfg.aprsis.host + ":" + (cfg.aprsis.port || 14580)]);
@@ -620,6 +637,10 @@
             if (cfg.aprsis.igating != null) items.push(["Igating", cfg.aprsis.igating ? "Enabled" : "Disabled"]);
             if (cfg.aprsis.beaconing != null) items.push(["Beaconing", cfg.aprsis.beaconing ? "Enabled" : "Disabled"]);
             if (cfg.aprsis.threshold) items.push(["Beacon Interval", (cfg.aprsis.threshold / 60) + " min"]);
+            if (cfg.aprsis.dao) {
+                var daoLabel = { human: "Human-readable (~1.85m)", base91: "Base-91 (~0.2m)", off: "Off" };
+                items.push(["DAO Precision", daoLabel[cfg.aprsis.dao] || cfg.aprsis.dao]);
+            }
         }
         if (cfg.rtp) {
             items.push(["RTP Multicast", cfg.rtp.host + ":" + cfg.rtp.port]);
@@ -1957,6 +1978,70 @@
             stationData = JSON.parse(e.data);
             renderStations();
         });
+
+        es.addEventListener("gps_status", function (e) {
+            onMessage();
+            var d = JSON.parse(e.data);
+
+            // GPS chip: green when the fix is fresh & usable, amber when a stale
+            // fix is present, red when there is no fix.
+            var fixLabel = d.mode >= 3 ? "3D" : (d.mode === 2 ? "2D" : "No Fix");
+            var state = d.mode >= 2 ? (d.fresh ? "connected" : "warn") : "disconnected";
+            setStatus(gpsStatus, state, "GPS " + fixLabel);
+
+            // A fresh fix drives the station position used for distance calcs.
+            if (d.fresh && d.lat != null && d.lon != null) {
+                stationLat = d.lat;
+                stationLon = d.lon;
+            }
+
+            renderGpsReadout(d, fixLabel);
+        });
+    }
+
+    // Populate the GPS readout panel from a gps_status payload.
+    function renderGpsReadout(d, fixLabel) {
+        if (!gpsReadout) return;
+        gpsReadout.innerHTML = "";
+
+        var items = [];
+        items.push(["GPS Fix", fixLabel + (d.fresh ? "" : " (stale)")]);
+        items.push(["Satellites", (d.sats_used || 0) + " / " + (d.sats_visible || 0) + " used"]);
+        if (d.lat != null && d.lon != null) {
+            items.push(["GPS Position", { type: "coords", lat: d.lat, lon: d.lon, label: "GPS" }]);
+        }
+        if (d.alt_ft != null) items.push(["GPS Altitude", Math.round(d.alt_ft) + " ft"]);
+        if (d.hdop != null) items.push(["HDOP", d.hdop.toFixed(1)]);
+
+        for (var i = 0; i < items.length; i++) {
+            var div = document.createElement("div");
+            div.className = "config-item";
+
+            var label = document.createElement("span");
+            label.className = "config-label";
+            label.textContent = items[i][0] + ":";
+            div.appendChild(label);
+
+            var value = document.createElement("span");
+            value.className = "config-value";
+            var itemVal = items[i][1];
+            if (itemVal && itemVal.type === "coords") {
+                var link = document.createElement("a");
+                link.href = mapUrl(itemVal.lat, itemVal.lon, itemVal.label);
+                link.target = "_blank";
+                link.rel = "noopener";
+                link.className = "coord-link";
+                link.textContent = itemVal.lat.toFixed(6) + ", " + itemVal.lon.toFixed(6);
+                value.appendChild(link);
+            } else {
+                value.textContent = itemVal;
+            }
+            div.appendChild(value);
+
+            gpsReadout.appendChild(div);
+        }
+
+        gpsReadout.style.display = "";
     }
 
     // Start
