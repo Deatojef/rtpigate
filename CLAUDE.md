@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-rtpigate is an APRS igate application for KA9Q-Radio backend, written in Rust. It receives AX.25 frames via RTP multicast from KA9Q-Radio, filters them, and gates them to the APRS-IS internet network. A web frontend displays real-time packet data via Server-Sent Events.
+rtpigate is a receive-only APRS igate written in Rust. It subscribes to the decoded-APRS multicast stream published by the `aprs-streamd` base service (see https://github.com/deatojef/aprs-stream) — fully-decoded, typed `AprsFrame` messages via the shared `aprs-stream` crate — filters them, and gates qualifying packets to the APRS-IS internet network. The RTP audio, AFSK demodulation, and AX.25/APRS decode happen once, upstream in `aprs-streamd`; rtpigate no longer touches any of that. A web frontend displays real-time packet data via Server-Sent Events.
 
 ## Build & Run Commands
 
@@ -25,7 +25,7 @@ The application reads `config.toml` from the current working directory at startu
 
 Up to five concurrent tasks orchestrated in `main.rs`:
 
-1. **rtp_listener** (`packet.rs`) — Binds to UDP multicast, parses RTP headers and AX.25 frames, broadcasts `DataItem::Pkt` on a shared channel (capacity 128).
+1. **rtp_listener** (`stream.rs`) — Joins the decoded-APRS UDP multicast group via `aprs_stream::Subscriber`, maps each typed `AprsFrame` to the internal `RTPPacket` (AX.25 framing facts read from the frame's `ax25_meta`; payload from `frame.parsed` — nothing re-parsed), and broadcasts `DataItem::Pkt` on a shared channel (capacity 128). The function keeps its historical name.
 
 2. **aprsis_task** (`aprsis.rs`) — Maintains persistent TCP connection to APRS-IS server with capped exponential backoff (5s→300s max). Consumes RF packets from broadcast channel, applies igating filter rules, and forwards to APRS-IS. Sends position beacons and telemetry on a configurable interval.
 
@@ -47,7 +47,7 @@ Graceful shutdown via `CancellationToken` on SIGTERM/SIGINT.
 
 ## Configuration (config.toml)
 
-Sections: `[station]` (callsign), `[location]` (lat/lon/alt + `source`), `[aprsis]` (server, passcode, beacon/igate flags, symbol, telemetry interval, `dao` precision), `[rtp]` (multicast host/port), `[gpsd]` (GPSD connection + movement beaconing). Config traits `APRSISLogin` and `APRSISPasscode` are in `config.rs`.
+Sections: `[station]` (callsign), `[location]` (lat/lon/alt + `source`), `[aprsis]` (server, passcode, beacon/igate flags, symbol, telemetry interval, `dao` precision), `[stream]` (decoded-APRS multicast group/port, optional interface + recv buffer), `[gpsd]` (GPSD connection + movement beaconing). Config traits `APRSISLogin` and `APRSISPasscode` are in `config.rs`.
 
 ### Beacon DAO precision (`[aprsis] dao`)
 

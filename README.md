@@ -1,22 +1,22 @@
 # rtpigate
 
-An APRS receive-only iGate for [KA9Q-Radio](http://www.ka9q.net/radio/) backend, written in Rust. It subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, demodulates the 1200-baud AFSK in-process, decodes the AX.25/APRS frames, filters them per APRS-IS igating rules, and forwards qualifying packets to the APRS-IS internet network. Includes a real-time web dashboard for monitoring station activity, including a slicer-diversity waterfall for visualising demodulator health.
+An APRS receive-only iGate for the [KA9Q-Radio](http://www.ka9q.net/radio/) backend, written in Rust. It subscribes to the **decoded-APRS multicast stream** published by [`aprs-streamd`](https://github.com/deatojef/aprs-stream) — fully-decoded, typed APRS frames — filters them per APRS-IS igating rules, and forwards qualifying packets to the APRS-IS internet network. Includes a real-time web dashboard for monitoring station activity, including a slicer-diversity waterfall for visualising demodulator health.
 
-> **No `packetd` required.** Earlier versions consumed pre-decoded AX.25 frames from KA9Q-Radio's `packetd` daemon. rtpigate now performs RTP de-jitter, AFSK demodulation, HDLC framing, CRC validation, and AX.25/APRS parsing itself via the [`aprs-rtp`](https://crates.io/crates/aprs-rtp) and [`aprs-decode`](https://crates.io/crates/aprs-decode) crates. Point the `[rtp]` section at a channel's **audio** (PCM) multicast group — not an AX.25 frame group — and you no longer need to run `packetd` at all.
+> **rtpigate is now a thin stream consumer.** Earlier versions owned the whole chain — subscribing to KA9Q-Radio RTP audio, demodulating the 1200-baud AFSK, framing HDLC, validating CRC, and parsing AX.25/APRS in-process. That decode work now happens **once**, upstream in the `aprs-streamd` base service, which publishes richly-typed [`AprsFrame`](https://github.com/deatojef/aprs-stream) messages (raw AX.25 + parsed payload + RF/framing metadata) on a UDP multicast group. rtpigate consumes that stream via the shared [`aprs-stream`](https://github.com/deatojef/aprs-stream) crate and never touches RTP audio, AFSK, or AX.25 parsing itself. Point the `[stream]` section at the group `aprs-streamd` emits to. See [aprs-stream](https://github.com/deatojef/aprs-stream) for the producer.
 
 ## Features
 
 - **Receive-only iGate** (RF to Internet) using `qAO` construct
-- **In-process AFSK demodulation** — RTP de-jitter, 1200-baud demod, HDLC/CRC, and AX.25/APRS parsing all in Rust (no external `packetd`)
-- **Multi-slicer demodulator** — a bank of parallel amplitude-imbalance slicers (default 8) maximises decode rate across twisted/imbalanced audio
-- **Multi-frequency support** via KA9Q-Radio's RTP audio multicast stream
+- **Thin stream consumer** — subscribes to `aprs-streamd`'s decoded-APRS multicast; no RTP audio, AFSK demodulation, or AX.25 parsing in this process
+- **Byte-faithful igating** — the original 8-bit info field rides on the wire (`ax25_meta.info_offset` into the raw AX.25), so Mic-E/binary payloads are gated verbatim
+- **Multi-frequency support** — inherited from the producer, which decodes every KA9Q-Radio channel it listens to
 - **Position beaconing** and **APRS telemetry** to APRS-IS
 - **GPSD position source** for mobile/portable operation — live position with movement-triggered, rate-limited beaconing and `!DAO!` precision (see [GPSD Position Source & Beacon Cadence](#gpsd-position-source--beacon-cadence))
 - **Real-time web dashboard** with Server-Sent Events (SSE)
   - Live packet table with APRS symbol icons, coordinates, and distance
   - Last-heard stations table sorted by packet count
   - Sparkline charts for RF and APRS-IS statistics
-  - **Slicer-diversity waterfall** heatmap for visualising demodulator health and audio twist
+  - **Slicer-diversity waterfall** heatmap for visualising demodulator health and audio twist (driven by per-frame slicer metadata from the producer)
   - Callsign links to aprs.fi, coordinate links to Google/Apple Maps
   - Dark/light theme toggle
   - Mobile-responsive layout
@@ -32,10 +32,10 @@ Up to five concurrent async tasks orchestrated with tokio (the GPSD task runs on
 
 ```
                                                                      +-----------+
-+-----------+  RTP audio   +----------+  broadcast  +--------+  SSE  |   axum    |
-| KA9Q-Radio| (PCM/UDP     | ka9q.rs  | (DataItem)  | sse.rs | ----> | /api/sse  | --> Browser
-|   (SDR)   |  multicast)  | aprs-rtp | ----------> |        |       +-----------+
-|           | -----------> | aprs-dec |             +--------+
++-----------+  AprsFrame   +----------+  broadcast  +--------+  SSE  |   axum    |
+|aprs-streamd| (CBOR/UDP   |stream.rs | (DataItem)  | sse.rs | ----> | /api/sse  | --> Browser
+| (producer)|  multicast)  |aprs-strm | ----------> |        |       +-----------+
+|           | -----------> | subscribe|             +--------+
 +-----------+              +----------+
                                 |
                                 | broadcast (DataItem)
@@ -46,7 +46,7 @@ Up to five concurrent async tasks orchestrated with tokio (the GPSD task runs on
                            +----------+          +-----------+
 ```
 
-- **ka9q.rs** -- Subscribes to the KA9Q-Radio **audio** RTP multicast group via the `aprs-rtp` crate, which de-jitters the stream, demodulates the 1200-baud AFSK through a bank of parallel slicers, frames HDLC, validates the CRC, and parses AX.25. Each decoded frame's APRS payload (position, Mic-E, object, item, altitude, symbol) is then parsed with the `aprs-decode` crate and mapped to the internal packet type. Also aggregates per-slicer decode counts for the waterfall and reconnects with backoff on failure.
+- **stream.rs** -- Joins the decoded-APRS multicast group via the `aprs-stream` crate's `Subscriber` and receives typed `AprsFrame` messages (one per UDP datagram). Each frame is mapped to the internal packet type: the AX.25 framing facts (source/dest/path/heard/dti/info) come straight from the frame's `ax25_meta` block — decoded once upstream, never re-parsed here — and the APRS payload (position, Mic-E, object, item, altitude, symbol) is read from the frame's already-parsed packet. Also aggregates per-slicer decode counts for the waterfall (from the producer's per-frame slicer metadata) and reconnects with backoff on failure.
 - **aprs_is.rs** -- Maintains persistent TCP connection to APRS-IS with capped exponential backoff (5s to 300s). Handles login verification, beaconing, and telemetry.
 - **gpsd.rs** -- Optional GPSD client (spawned only when `[location] source = "gpsd"`). Connects to gpsd over TCP with the same backoff strategy, parses live `TPV`/`SKY` reports, and shares the latest fix with `aprs_is.rs` for movement-based beaconing. Also surfaces GPS health to the dashboard via a `gps_status` SSE event.
 - **igate.rs** -- Applies igating filter rules (rfonly, staleness, satellite, query, third-party, duplicates).
@@ -58,7 +58,7 @@ Graceful shutdown via `CancellationToken` on SIGTERM/SIGINT with clean TCP FIN t
 ## Requirements
 
 - **Rust** 2024 edition (1.85+)
-- **KA9Q-Radio** running with a channel configured for **APRS** (1200-baud, ~12 kHz sample rate FM/PCM audio) and producing an RTP **audio** multicast group. `packetd` is **not** required — rtpigate demodulates the audio itself.
+- **[`aprs-streamd`](https://github.com/deatojef/aprs-stream)** running on the network (typically on the KA9Q-Radio host), publishing the decoded-APRS multicast stream. That base service owns the KA9Q-Radio RTP audio, demodulation, and decode — rtpigate just subscribes. (KA9Q-Radio itself is still the RF front end, but rtpigate no longer talks to it directly.)
 - A valid **APRS-IS passcode** for your callsign (if igating/beaconing)
 - **Apache** or **nginx** as a reverse proxy (recommended for production)
 
@@ -71,7 +71,7 @@ cd rtpigate
 
 # Edit the config
 cp config.toml config.toml.bak
-nano config.toml    # Set your callsign, passcode, location, RTP host
+nano config.toml    # Set your callsign, passcode, location, [stream] group/port
 
 # Build and run
 cargo build
@@ -168,11 +168,13 @@ threshold = 600                # Beacon/telemetry interval in seconds (default: 
 dao = "human"                  # !DAO! beacon precision: "human" (~1.85m, default),
                                # "base91" (~0.2m), or "off". See DAO precision below.
 
-[rtp]
-host = "packet.local"          # KA9Q-Radio AUDIO multicast hostname or IP. Required.
-                               # Point this at the channel's PCM audio group,
-                               # NOT an AX.25/packetd frame group.
-port = 5004                    # KA9Q-Radio multicast UDP port. Required.
+[stream]
+group = "239.12.34.56"         # Decoded-APRS multicast group published by aprs-streamd.
+                               # Must be a multicast address and match the producer's
+                               # emit destination. Required.
+port = 17014                   # Multicast UDP port (must match aprs-streamd). Required.
+# interface = "192.168.1.20"   # Optional: local NIC (IP) to join the group on (multi-homed hosts).
+# recv_buffer_bytes = 4194304  # Optional: enlarge SO_RCVBUF to ride out bursts.
 
 [gpsd]                         # Optional section. Only used when [location] source = "gpsd".
 host = "localhost"             # gpsd hostname or IP (default: localhost).
@@ -197,7 +199,7 @@ frontend = "/usr/local/share/rtpigate/frontend"  # Path to frontend assets direc
 At startup, the application validates the config and exits with clear error messages if:
 
 - Callsign is missing or empty
-- RTP host is empty or port is 0
+- `[stream] group` is not a multicast address, or port is 0
 - Latitude or longitude is out of range
 - APRS-IS is enabled but host or port is missing
 - Beaconing is enabled with `source = "config"` but location (lat, lon, alt) is incomplete
@@ -382,12 +384,12 @@ The dashboard is accessible at `http://127.0.0.1:3000` (or through your reverse 
 - **Theme toggle** -- switches between dark and light themes (persisted in browser)
 - **Status indicators**:
   - **SSE** -- green when connected, red with backoff timer when disconnected
-  - **KA9Q** -- green when RF packets are being received
+  - **KA9Q** -- green when APRS frames are being received from the stream
   - **APRS-IS** -- green when connected and receiving telemetry
 
 ### Station Configuration
 
-Displays the active configuration (coordinates, APRS-IS settings, RTP multicast address). Enabled features are highlighted in green. Updates live on SIGHUP config reload.
+Displays the active configuration (coordinates, APRS-IS settings, APRS stream multicast address). Enabled features are highlighted in green. Updates live on SIGHUP config reload.
 
 ### Sparkline Charts
 
@@ -407,15 +409,15 @@ Hover over the `(?)` next to each label for a description. On touch devices, tap
 
 ### Slicer Activity Waterfall
 
-A heatmap that visualises how the in-process AFSK demodulator is performing. It is the most useful tuning aid in the dashboard once you understand what it shows.
+A heatmap that visualises how the upstream AFSK demodulator (in `aprs-streamd`) is performing. It is the most useful tuning aid in the dashboard once you understand what it shows. rtpigate does not demodulate anything itself — the slicer bank size and per-slicer gain ladder arrive on the wire with every frame (`RfMeta::slicer_gains`), and the dashboard renders them; the per-frame "which slicers decoded this" bitmask drives the cell counts.
 
-**Background — what a "slicer" is.** The `aprs-rtp` demodulator does not run a single AFSK decoder; it runs a *bank* of them in parallel (8 by default). Each decoder, or **slicer**, applies a different gain to the space tone relative to the mark tone before deciding which bit was sent:
+**Background — what a "slicer" is.** The producer's demodulator does not run a single AFSK decoder; it runs a *bank* of them in parallel (8 by default). Each decoder, or **slicer**, applies a different gain to the space tone relative to the mark tone before deciding which bit was sent:
 
 ```
 demod_out = mark_amplitude − (space_amplitude × gain)
 ```
 
-The gains are spread geometrically across the bank (default `0.5` → `4.0`). This compensates for **audio twist** — the amplitude imbalance between the 1200 Hz mark and 2200 Hz tones that pre-emphasis (transmitter) and de-emphasis (receiver) introduce:
+The gains are spread geometrically across the bank (uniform in twist dB). This compensates for **audio twist** — the amplitude imbalance between the 1200 Hz mark and 2200 Hz tones that pre-emphasis (transmitter) and de-emphasis (receiver) introduce:
 
 - **gain < 1** (low-numbered slicers) — attenuates space, so it favors **loud-space / pre-emphasized** signals.
 - **gain ≈ 1** (middle slicers) — balanced, favors **flat-audio** signals.
@@ -506,7 +508,7 @@ sudo nano /etc/rtpigate/config.toml
 sudo systemctl reload rtpigate
 ```
 
-The updated config is pushed to connected browsers immediately via SSE. Note: changes to RTP host/port or APRS-IS host/port require a full restart.
+The updated config is pushed to connected browsers immediately via SSE. Note: changes to the `[stream]` group/port or APRS-IS host/port require a full restart.
 
 ### Service Management
 
@@ -528,10 +530,12 @@ This tags the version, builds the `.deb` package via `cargo-deb`, and creates a 
 
 ## Key Dependencies
 
-The RF receive path is built on two crates from crates.io (no vendored fork is required anymore):
+The RF receive and decode work lives entirely upstream in `aprs-streamd`; rtpigate depends only on the shared stream crate (plus `aprs-decode` for the payload types):
 
-- **[`aprs-rtp`](https://crates.io/crates/aprs-rtp)** — subscribes to a KA9Q-Radio RTP audio multicast group, de-jitters it, demodulates 1200-baud AFSK through the parallel slicer bank, frames HDLC, validates CRC (single-bit error recovery by default), and parses AX.25. Decoder defaults: 8 slicers, space-gain ladder `0.5`–`4.0`, 2-packet jitter buffer.
-- **[`aprs-decode`](https://crates.io/crates/aprs-decode)** — parses the APRS information field (position, Mic-E, object, item, altitude, and map symbol) from each decoded frame.
+- **[`aprs-stream`](https://github.com/deatojef/aprs-stream)** — the shared schema, CBOR codec, and UDP multicast transport for the disaggregated pipeline. rtpigate uses its `Subscriber` to join the group and receive typed `AprsFrame` messages (raw AX.25 + parsed payload + RF/framing metadata). This is the single source of truth for the wire format, shared with the `aprs-streamd` producer.
+- **[`aprs-decode`](https://crates.io/crates/aprs-decode)** — provides the parsed APRS payload types (position, Mic-E, object, item, altitude, map symbol) that ride inside each frame and that rtpigate reads directly.
+
+> The RF-side crates (`aprs-rtp` for RTP audio + AFSK demodulation, and the decode invocation) now live in the [`aprs-streamd`](https://github.com/deatojef/aprs-stream) base service, not here.
 
 Other notable dependencies: `tokio` (async runtime), `axum` + `tower-http` (HTTP/SSE server), `serde`/`serde_json` (telemetry serialization), and `chrono` (timestamps).
 

@@ -33,7 +33,7 @@ dependencies = [
 [[package]]
 name = "aprs-stream"
 version = "0.1.0"
-source = "git+https://github.com/deatojef/aprs-stream.git#26952b1ad4f6c9deb5df2df40082c4bc1bc11c43"
+source = "git+https://github.com/deatojef/aprs-stream.git?tag=v0.2.0#6cad52b5630315dda489c3e5d1e563bbe5ac0ed4"
 dependencies = [
  "aprs-decode",
  "ciborium",

@@ -1,16 +1,16 @@
 # ARCHITECTURE.md
 
-Reference document for the internals of rtpigate — a receive-only APRS iGate for the KA9Q-Radio backend. Describes the implementation as it currently stands.
+Reference document for the internals of rtpigate — a receive-only APRS iGate that consumes the decoded-APRS multicast stream published by the [`aprs-streamd`](https://github.com/deatojef/aprs-stream) base service. Describes the implementation as it currently stands.
 
 ## System Overview
 
-rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, demodulates the 1200-baud AFSK and parses AX.25/APRS entirely in-process, then filters and gates qualifying packets to APRS-IS. A web dashboard receives real-time updates over Server-Sent Events.
+rtpigate subscribes to the **decoded-APRS multicast stream** published by `aprs-streamd` — fully-decoded, typed [`AprsFrame`](https://github.com/deatojef/aprs-stream) messages, one per UDP datagram — maps each frame to its internal packet type, then filters and gates qualifying packets to APRS-IS. It no longer touches RTP audio, AFSK demodulation, or AX.25 parsing: that decode work happens once, upstream in the producer, and is shared. A web dashboard receives real-time updates over Server-Sent Events.
 
 ```
-┌─────────────┐  RTP audio   ┌──────────────────┐  broadcast   ┌──────────┐  broadcast   ┌───────────┐
-│  KA9Q-Radio │──(PCM/UDP ──>│     ka9q.rs      │──(DataItem)─>│  sse.rs  │──(SSEEvent)─>│  axum     │──> Browser
-│  (SDR)      │   multicast) │  aprs-rtp +      │              │          │              │  /api/sse │
-│             │              │  aprs-decode     │              └──────────┘              └───────────┘
+┌─────────────┐  AprsFrame   ┌──────────────────┐  broadcast   ┌──────────┐  broadcast   ┌───────────┐
+│ aprs-streamd│──(CBOR/UDP ─>│    stream.rs     │──(DataItem)─>│  sse.rs  │──(SSEEvent)─>│  axum     │──> Browser
+│  (producer) │  multicast)  │  aprs-stream     │              │          │              │  /api/sse │
+│             │              │  ::Subscriber    │              └──────────┘              └───────────┘
 └─────────────┘              └──────────────────┘
                                      │
                                      │ broadcast (DataItem)
@@ -22,7 +22,7 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
                                └──────────────┘
 ```
 
-> **No `packetd`.** Earlier designs consumed pre-decoded AX.25 frames from KA9Q-Radio's `packetd` daemon over a separate multicast group. rtpigate now performs RTP de-jitter, AFSK demodulation, HDLC framing, CRC validation and AX.25 parsing itself via the [`aprs-rtp`](https://crates.io/crates/aprs-rtp) crate, and APRS payload parsing via [`aprs-decode`](https://crates.io/crates/aprs-decode). The `[rtp]` section points at a channel's **audio** (PCM) multicast group.
+> **Disaggregated decode.** Earlier designs owned the whole RF chain — RTP de-jitter, AFSK demodulation, HDLC framing, CRC validation, and AX.25 parsing — in-process via the [`aprs-rtp`](https://crates.io/crates/aprs-rtp) crate. That now lives in the [`aprs-streamd`](https://github.com/deatojef/aprs-stream) base service, which decodes once and publishes typed frames on a UDP multicast group. rtpigate consumes them via the shared [`aprs-stream`](https://github.com/deatojef/aprs-stream) crate; the `[stream]` section points at that group. APRS payload types still come from [`aprs-decode`](https://crates.io/crates/aprs-decode), now embedded in each frame.
 
 ## Module Breakdown
 
@@ -34,7 +34,7 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
 - Creates two broadcast channels:
   - **DataItem channel** (capacity 128): carries `DataItem::Pkt(Packet)` and `DataItem::Tlm(AppTelemetry)` from producers to consumers.
   - **SSEEvent channel** (capacity 128): carries serialized JSON events to browser connections.
-- Creates a 24-hour rolling **satellite packet log** (`Arc<RwLock<VecDeque<RTPPacket>>>`) shared between the RTP listener (writer) and the `/api/satellite-packets` handler (reader).
+- Creates a 24-hour rolling **satellite packet log** (`Arc<RwLock<VecDeque<RTPPacket>>>`) shared between the stream listener (writer) and the `/api/satellite-packets` handler (reader).
 - Creates a 24-hour rolling **statistics history store** (`Arc<RwLock<HistoryStore>>`, `history.rs`) shared between `sse_task` (writer — merges the `packet_statistics` and `aprsis_statistics` telemetry into 15s buckets keyed by timestamp) and the `/api/history` handler (reader). This is in-memory only and is rebuilt live after a restart.
 - Spawns async tasks into a `JoinSet`:
   1. `rtp_listener` (always)
@@ -53,24 +53,25 @@ rtpigate subscribes to a KA9Q-Radio channel's **RTP audio multicast group**, dem
 - **SIGHUP** reloads and re-validates the config, updates the shared `PublicConfig`, and pushes a `config` SSE event to connected browsers. (Changes to RTP/APRS-IS host/port still need a restart.)
 - Graceful shutdown via `CancellationToken` on **SIGTERM/SIGINT**, then `JoinSet::join_all()`.
 
-### `ka9q.rs` — RTP Audio Listener & Demodulator
-Receives, demodulates, decodes, and classifies RF packets, and produces all RF-side telemetry.
+### `stream.rs` — Decoded-APRS Stream Subscriber
+Receives typed frames from the multicast stream, maps them to the internal packet type, and produces all RF-side telemetry. It does **not** demodulate or parse AX.25 — that happened once, upstream in the producer.
 
-- Builds an `aprs_rtp::config::SourceConfig` from `[rtp]` (`host`, `port`, `jitter_buffer = 2`) and a `DecoderConfig` (crate defaults: **8 slicers**, space-gain ladder **0.5 → 4.0**, single-bit CRC fix).
-- Runs `aprs_rtp::AprsListener::new(source, decoder).run()`, which de-jitters the RTP audio, demodulates 1200-baud AFSK through the parallel slicer bank, frames HDLC, validates CRC and parses AX.25, then streams decoded packets over a channel. Reconnects with capped exponential backoff (5s → 300s) on setup failure or channel close.
-- For each decoded packet, `map_packet()`:
-  - Maps AX.25 framing (source, destination, via-path, heard-direct, per-hop repeated bits) into the internal `RTPPacket`.
-  - Re-parses the APRS information field with `aprs-decode` (`decode_ax25`, falling back to `decode_textual`) to extract **position / Mic-E / object / item** coordinates, altitude (feet; Mic-E metres converted), and the **map symbol** (table + code).
+- Builds an `aprs_stream::subscribe::SubscribeConfig` from `[stream]` (`group`, `port`, optional `interface` and `recv_buffer_bytes`) and joins the multicast group via `aprs_stream::Subscriber` (`socket2`: `SO_REUSEADDR`, interface-selected join, `SO_RCVBUF`). Reconnects with capped exponential backoff (5s → 300s) on socket setup failure or a socket-level receive error; a malformed/version-incompatible datagram is logged and skipped without tearing down.
+- For each received `AprsFrame`, `map_frame()`:
+  - Reads the AX.25 framing facts (source, destination, via-path with per-hop repeated bits, heard-direct, heard-from, DTI) straight from the frame's `ax25_meta` block — **no AX.25 re-parsing**. A frame lacking `ax25_meta` (a pre-v2 producer) is skipped.
+  - Takes the verbatim 8-bit info field as `ax25[ax25_meta.info_offset..]` (byte-faithful, for igating) and derives the lossy-UTF-8 `info` for display.
+  - Reads **position / Mic-E / object / item** coordinates, altitude (feet; Mic-E metres converted), and the **map symbol** from the frame's already-parsed payload (`frame.parsed`), falling back to `decode_textual` on the reconstructed TNC2 text only if it wasn't typed.
+  - Reconstructs the TNC2 `raw` string (with heard `*` markers) via `aprs-decode`'s `encode_textual`.
   - Derives `digipeater_path`/`hops` (real callsigns only), `was_digipeated` (any repeated bit, including WIDE fill-ins), and `rfonly` (TCPIP/TCPXX/RFONLY/NOGATE in path).
 - After mapping, sets `is_satellite` (frequency ∈ `[satellite] frequencies`) and `igated` (mirrors `igate::droppacket`, minus dedup) for display.
-- Aggregates per-slicer decode counts for the waterfall from each packet's `slicer_mask` bitmask.
+- Learns the slicer bank size and per-slicer gain ladder from the first frame carrying `RfMeta::slicer_gains` (the producer publishes it per-frame), then aggregates per-slicer decode counts for the waterfall from each frame's `slicer_mask`.
 - Maintains rolling state, emitted on a 15-second tick:
   - **Packet statistics** (`packet_statistics`): total / heard-direct / digipeated / decode-errors series (100 points) plus lifetime counters.
-  - **Slicer statistics** (`slicer_statistics`): slicer count, the space-gain ladder, the last 10 per-slicer interval snapshots, and lifetime per-slicer totals.
+  - **Slicer statistics** (`slicer_statistics`): slicer count, the gain ladder (from the wire), the last 10 per-slicer interval snapshots, and lifetime per-slicer totals.
   - **Station statistics** (`station_statistics`): a per-callsign table (evicted after 36h) and a per-frequency table (pruned after 24h).
 - Appends satellite-frequency packets to the shared 24h satellite log.
 
-> The `decode_errors` counter is retained for frontend compatibility but stays 0: `aprs-rtp` only emits successfully decoded frames.
+> The `decode_errors` counter is retained for frontend compatibility but stays 0: the producer only publishes successfully-decoded frames.
 
 ### `aprs_is.rs` — APRS-IS Connection, IGate Gating, Beaconing, Telemetry
 Owns the persistent TCP connection and everything that writes to APRS-IS.
@@ -144,8 +145,8 @@ Pure functions and encoders; holds no connection state.
   - (`config` is emitted directly from `main.rs` on SIGHUP, not via `sse.rs`.)
 
 ### `config.rs` — Configuration & Telemetry Types
-- Deserializes `config.toml` via the `toml` crate. Sections: `[station]`, `[location]` (incl. `source`), `[aprsis]`, `[rtp]`, optional `[satellite]`, optional `[http]`, optional `[gpsd]`.
-- `Config::validate()` returns a list of human-readable errors (callsign, RTP host/port, lat/lon ranges, APRS-IS host/port when enabled, location completeness when beaconing with `source = "config"`, positive `[gpsd]` thresholds, HTTP listen format).
+- Deserializes `config.toml` via the `toml` crate. Sections: `[station]`, `[location]` (incl. `source`), `[aprsis]`, `[stream]`, optional `[satellite]`, optional `[http]`, optional `[gpsd]`.
+- `Config::validate()` returns a list of human-readable errors (callsign, `[stream]` group being multicast and port > 0, lat/lon ranges, APRS-IS host/port when enabled, location completeness when beaconing with `source = "config"`, positive `[gpsd]` thresholds, HTTP listen format).
 - `Config::to_public()` produces `PublicConfig` (passcode and other secrets stripped) for `/api/config` and SSE.
 - `Config::satellite_frequencies()` returns `[satellite] frequencies`, defaulting to `[145.825]`.
 - Traits: `APRSISLogin` (login string) and `APRSISPasscode` (`compute_passcode` via the standard XOR hash + `passcode_isvalid`).
@@ -260,13 +261,13 @@ pub struct DataPoint<T: Add> {
 
 ## The Slicer-Diversity Waterfall
 
-The most distinctive piece of the dashboard, and the reason `ka9q.rs` carries `slicer_mask` end-to-end.
+The most distinctive piece of the dashboard, and the reason `slicer_mask` and `slicer_gains` are carried on every frame from the producer through to the browser.
 
-- The `aprs-rtp` demodulator runs a **bank of parallel slicers** (default 8). Each applies a different gain to the space tone before slicing: `demod_out = mark − space × gain`. As of aprs-rtp 0.2.0 the ladder is parameterized in **twist dB**: `slicers` rungs spread evenly across `[min_twist_db, max_twist_db]` (default `−12 → +9 dB`, a 3 dB step landing one rung on 0 dB), with each rung's linear gain `= 10^(db/20)`. Uniform-in-dB is identical to geometric-in-linear-gain.
+- The producer's demodulator (in `aprs-streamd`, via `aprs-rtp`) runs a **bank of parallel slicers** (default 8). Each applies a different gain to the space tone before slicing: `demod_out = mark − space × gain`. The ladder is parameterized in **twist dB**: `slicers` rungs spread evenly across `[min_twist_db, max_twist_db]` (e.g. `−12 → +12 dB`), with each rung's linear gain `= 10^(db/20)`. Uniform-in-dB is identical to geometric-in-linear-gain.
   - Negative twist (`gain < 1`) favors **pre-emphasized** (loud-space) signals; positive (`gain > 1`) favors **de-emphasized** (loud-mark) signals; `0 dB` (`gain ≈ 1`) is flat.
-- A frame may be CRC-recovered by several slicers at once; `slicer_mask` records which. `ka9q.rs` tallies each set bit per 15s window into `SlicerInterval.counts`, keeps the last 10 windows, and ships them as `slicer_statistics`.
+- A frame may be CRC-recovered by several slicers at once; the frame's `RfMeta::slicer_mask` records which. `stream.rs` tallies each set bit per 15s window into `SlicerInterval.counts`, keeps the last 10 windows, and ships them as `slicer_statistics`.
 - The frontend (`app.js`, `drawWaterfall`) renders columns = slicers (ordered by gain, headered with the slicer's twist in dB and grouped into pre-emph / flat / de-emph zones) and rows = 15s windows (newest on top). Cell brightness/number is that slicer's recovered-packet count, scaled to the busiest visible cell.
-- `space_gains()` in `ka9q.rs` re-derives the same ladder the crate uses internally (the crate's copy is private) so the frontend column labels stay truthful — kept in sync with the `DecoderConfig` passed to the listener.
+- The gain ladder itself arrives on the wire in `RfMeta::slicer_gains` (the producer publishes it per-frame, since a stateless multicast consumer can join at any time). `stream.rs` learns it from the first frame that carries it and derives the twist-dB column labels and pre-emph/flat/de-emph zones from it — no local decoder config, so the labels always match what the producer actually ran.
 
 Interpretation: activity spread across many columns ⇒ strong/clean signals; a persistent lean toward the pre-emph or de-emph zones indicates audio twist worth correcting in the receive path.
 
@@ -294,9 +295,11 @@ overlay = "R"            # optional; omit for primary-table icons
 symbol = "\\&"           # table char + symbol char (backslash escaped)
 threshold = 600          # beacon/telemetry interval, seconds
 
-[rtp]
-host = "packet.local"    # KA9Q-Radio AUDIO multicast group (not a packetd frame group)
-port = 5004
+[stream]
+group = "239.12.34.56"   # decoded-APRS multicast group published by aprs-streamd
+port = 17014             # must match the producer's emit destination
+# interface = "192.168.1.20"    # optional; local NIC to join on (multi-homed)
+# recv_buffer_bytes = 4194304   # optional; enlarge SO_RCVBUF for bursts
 
 [satellite]              # optional; defaults to [145.825]
 frequencies = [145.825]
@@ -318,21 +321,21 @@ Vanilla JavaScript (`frontend/assets/app.js`), served by axum (typically behind 
 
 ## Key Dependencies
 
-- **[`aprs-rtp`](https://crates.io/crates/aprs-rtp)** — RTP audio subscription, de-jitter, multi-slicer AFSK demodulation, HDLC/CRC, AX.25 parsing.
-- **[`aprs-decode`](https://crates.io/crates/aprs-decode)** — APRS information-field parsing (position, Mic-E, object, item, altitude, symbol).
-- `tokio` (async runtime, broadcast channels, signals), `axum` + `tower-http` (HTTP/SSE/static), `serde`/`serde_json` (telemetry), `chrono` (timestamps), `flexi_logger`/`log`, `toml`.
+- **[`aprs-stream`](https://github.com/deatojef/aprs-stream)** — shared schema (`AprsFrame`), CBOR codec, and UDP multicast transport. rtpigate uses its `Subscriber` to receive typed frames; the crate is the single source of truth for the wire format, shared with the `aprs-streamd` producer.
+- **[`aprs-decode`](https://crates.io/crates/aprs-decode)** — the parsed APRS payload types (position, Mic-E, object, item, altitude, symbol) embedded in each frame and read directly by `stream.rs`.
+- `tokio` (async runtime, broadcast channels, signals), `axum` + `tower-http` (HTTP/SSE/static), `serde`/`serde_json` (telemetry), `socket2` (multicast join, via `aprs-stream`), `chrono` (timestamps), `flexi_logger`/`log`, `toml`.
 
-The previously vendored `aprs-parser-rs` fork has been removed; its role is covered by `aprs-rtp` + `aprs-decode`.
+The RF-side crate (`aprs-rtp` — RTP audio + AFSK demodulation) is no longer a dependency here; it lives in the `aprs-streamd` producer.
 
 ## Key Design Decisions
 
-1. **In-process demodulation** — `aprs-rtp`/`aprs-decode` replace the external `packetd`; `[rtp]` points at the channel audio group.
+1. **Disaggregated decode** — RTP audio, demodulation, and AX.25/APRS parsing happen once in the `aprs-streamd` producer; rtpigate consumes typed frames off a multicast group via `aprs-stream`. `[stream]` points at that group. AX.25 framing facts ride in each frame's `ax25_meta`, so nothing is re-parsed here.
 2. **Receive-only igate** — no Internet→RF gating, `qAO` not `qAR`; there is no `InetPacket` type.
 3. **Defense against line injection** — embedded CR/LF in any gated field is rejected (`MalformedField`) before and again at the write boundary.
 4. **Monotonic staleness guard** — the 30s age cutoff uses an `Instant` so clock corrections can't spuriously age packets.
 5. **Layered drop accounting** — every drop is attributed to a `DropReason` (plus separate dedup and channel-lag counters) so gating regressions surface in `aprsis_statistics`.
-6. **Slicer diversity surfaced to the operator** — `slicer_mask` is carried end-to-end and visualized as a waterfall for receive-path tuning.
-7. **Capped exponential backoff** — 5s→300s on both the RTP listener and the APRS-IS connection, responsive to brief dropouts and patient through long outages.
+6. **Slicer diversity surfaced to the operator** — the producer's per-frame `slicer_mask` and `slicer_gains` are carried end-to-end and visualized as a waterfall for receive-path tuning.
+7. **Capped exponential backoff** — 5s→300s on both the stream subscriber and the APRS-IS connection, responsive to brief dropouts and patient through long outages.
 8. **Loose coupling via broadcast channels** — lagging subscribers drop messages instead of stalling producers.
 9. **Localhost-only HTTP by default** — a reverse proxy handles TLS and public exposure.
 10. **Telemetry sequence persistence** — `/tmp/telem-seq.txt` survives process restarts (not reboots).

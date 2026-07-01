@@ -3,7 +3,7 @@ name = "rtpigate"
 version = "0.2.0"
 edition = "2024"
 authors = ["Jeff Deaton"]
-description = "APRS iGate for KA9Q-Radio backend"
+description = "APRS iGate consuming the aprs-streamd decoded-APRS multicast stream"
 license = "GPL-3.0"
 repository = "https://github.com/Deatojef/rtpigate"
 
@@ -24,7 +24,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 # the decoded, typed frames published by aprs-streamd and consumes them via the
 # shared aprs-stream crate. aprs-decode is still used directly for the parsed APRS
 # payload types (position/Mic-E/object/item, symbol) carried on those frames.
-aprs-stream = { git = "https://github.com/deatojef/aprs-stream.git" }
+aprs-stream = { git = "https://github.com/deatojef/aprs-stream.git", tag = "v0.2.0" }
 aprs-decode = "0.1"
 gpsd_proto = "1.0.0"
 
@@ -32,7 +32,7 @@ gpsd_proto = "1.0.0"
 maintainer = "Jeff Deaton <deatojef@yahoo.com>"
 section = "hamradio"
 priority = "optional"
-extended-description = "Receives audio streams over RTP multicast from KA9Q-Radio, demodulates AFSK, decodes the resulting APRS packets, filters them, and gates them to the APRS-IS internet network. Includes a web dashboard with real-time packet display via Server-Sent Events."
+extended-description = "Subscribes to the decoded-APRS multicast stream published by aprs-streamd (typed AprsFrame messages), filters the packets per APRS-IS igating rules, and gates qualifying packets to the APRS-IS internet network. The RTP audio, AFSK demodulation, and AX.25/APRS decode happen once, upstream in aprs-streamd. Includes a web dashboard with real-time packet display via Server-Sent Events."
 depends = "$auto"
 conf-files = ["/etc/rtpigate/config.toml"]
 maintainer-scripts = "deploy/debian/"

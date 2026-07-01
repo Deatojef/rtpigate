@@ -1,80 +1,59 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+#
+# Cut a new rtpigate release.
+#
+#   ./deploy/release.sh X.Y.Z
+#
+# Bumps the crate version, runs the pre-flight gate, commits, and pushes an
+# annotated tag `vX.Y.Z`. The push triggers .github/workflows/release.yml, which
+# cross-compiles for arm64 and amd64, builds a .deb for each, and attaches them
+# (plus SHA256SUMS) to a GitHub Release.
+set -euo pipefail
 
-# Build and publish a release to GitHub
-# Usage: ./deploy/release.sh [version]
-# Example: ./deploy/release.sh 0.1.0
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$PROJECT_DIR"
+MANIFEST="Cargo.toml"
 
-# Get version from argument or Cargo.toml
-VERSION="${1:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+die() { echo "error: $*" >&2; exit 1; }
+note() { echo ">> $*"; }
+
+VERSION="${1:-}"
+[ -n "$VERSION" ] || die "usage: $0 X.Y.Z"
+echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || die "version must be X.Y.Z (got '$VERSION')"
+
 TAG="v${VERSION}"
 
-echo "Building release $TAG"
+# --- Pre-flight ---
+[ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || die "must be on 'main'"
+[ -z "$(git status --porcelain)" ] || die "working tree is dirty; commit or stash first"
+git rev-parse "$TAG" >/dev/null 2>&1 && die "tag $TAG already exists"
 
-# Ensure working tree is clean
-if [ -n "$(git status --porcelain)" ]; then
-    echo "Error: working tree is not clean. Commit or stash changes first."
-    exit 1
-fi
+note "pre-flight checks (fmt, clippy, test)"
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 
-# Build release binary
-echo "Building release binary..."
-cargo build --release
+# --- Bump version (first 'version = "..."' line, i.e. the [package] one) ---
+note "bumping $MANIFEST to $VERSION"
+sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" "$MANIFEST"
+grep -q "^version = \"$VERSION\"" "$MANIFEST" || die "version bump failed"
+# Refresh Cargo.lock to reflect the new crate version.
+cargo update -p rtpigate
 
-# Build .deb package
-echo "Building .deb package..."
-cargo deb --no-build
+# --- Commit, tag, push ---
+note "committing and tagging $TAG"
+git add "$MANIFEST" Cargo.lock
+git commit -m "Release rtpigate $TAG"
+git tag -a "$TAG" -m "rtpigate $TAG"
 
-# Find the built .deb
-DEB_FILE=$(ls -1 target/debian/rtpigate_*.deb 2>/dev/null | head -1)
-if [ -z "$DEB_FILE" ]; then
-    echo "Error: .deb file not found"
-    exit 1
-fi
-
-echo "Built: $DEB_FILE"
-
-# Tag the release
-echo "Tagging $TAG..."
-git tag -a "$TAG" -m "Release $TAG"
+note "pushing main and $TAG"
+git push origin main
 git push origin "$TAG"
 
-# Create GitHub release with the .deb attached
-echo "Creating GitHub release..."
-gh release create "$TAG" \
-    "$DEB_FILE" \
-    --title "rtpigate $TAG" \
-    --notes "$(cat <<EOF
-## rtpigate $TAG
-
-### Installation
-
-Download the .deb package and install:
-\`\`\`bash
-sudo dpkg -i $(basename "$DEB_FILE")
-\`\`\`
-
-Then configure and start:
-\`\`\`bash
-sudo nano /etc/rtpigate/config.toml
-sudo systemctl enable --now rtpigate
-\`\`\`
-
-### View logs
-\`\`\`bash
-journalctl -u rtpigate -f
-\`\`\`
-
-### Reload config without restart
-\`\`\`bash
-sudo systemctl reload rtpigate
-\`\`\`
-EOF
-)"
-
-echo ""
-echo "Release $TAG published!"
-echo "URL: https://github.com/Deatojef/rtpigate/releases/tag/$TAG"
+echo
+note "pushed $TAG — GitHub Actions will build and publish the release."
+if command -v gh >/dev/null 2>&1; then
+    echo "   Watch:  gh run watch --exit-status"
+    echo "   Release: gh release view $TAG --web"
+fi

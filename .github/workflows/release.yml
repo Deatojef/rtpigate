@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install cross and cargo-deb
+        run: |
+          cargo install cross --locked
+          cargo install cargo-deb --locked
+
+      - name: Cross-compile rtpigate
+        run: cross build --release --target "${{ matrix.target }}"
+
+      - name: Build .deb
+        # --no-build: reuse the cross binary; --no-strip: it's already stripped
+        # via the release profile (host strip can't strip a foreign-arch binary).
+        run: cargo deb --target "${{ matrix.target }}" --no-build --no-strip
+
+      - name: Stage artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/debian/"*.deb dist/
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all .debs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          ( cd dist && sha256sum ./*.deb > SHA256SUMS )
+          ls -l dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.deb
+            dist/SHA256SUMS
+          generate_release_notes: true

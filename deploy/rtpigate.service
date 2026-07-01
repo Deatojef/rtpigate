@@ -1,5 +1,5 @@
 [Unit]
-Description=rtpigate - APRS iGate for KA9Q-Radio
+Description=rtpigate - APRS iGate consuming the aprs-streamd decoded-APRS stream
 Documentation=https://github.com/Deatojef/rtpigate
 After=network-online.target
 Wants=network-online.target
