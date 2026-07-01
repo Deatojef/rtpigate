@@ -1,10 +1,18 @@
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{tcp, TcpStream}, sync::broadcast, time::{interval, timeout, Duration}};
-use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, sync::{Arc, RwLock}};
 use chrono::{Local, Utc};
 use socket2::{SockRef, TcpKeepalive};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, RwLock},
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{TcpStream, tcp},
+    sync::broadcast,
+    time::{Duration, interval, timeout},
+};
+use tokio_util::sync::CancellationToken;
 
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 use tokio::time::sleep;
 
 // Connection-level timeouts. APRS-IS servers send `#` keepalive comments every ~20s,
@@ -13,11 +21,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
-use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem, GpsFix, Location, PositionSource, DaoMode};
+use crate::config::{
+    APRSISLogin, APRSISPasscode, AppTelemetry, AprsisTelemetry, Config, DaoMode, DataItem,
+    DataPoint, DataSeries, GpsFix, Location, PositionSource,
+};
 use crate::error::RtpigateError;
+use crate::igate::{self, APRSQuadratic, AnalogItem, TOCALL, Telemetry};
 use crate::stream::Packet;
-use crate::igate::{self, TOCALL, AnalogItem, APRSQuadratic, Telemetry};
-
 
 /// Builds and writes a position beacon for `loc` to the APRS-IS server. Returns
 /// `true` if the connection is still healthy (the beacon was sent, or skipped due
@@ -37,26 +47,37 @@ async fn send_position_beacon(
         Err(e) => {
             warn!("Error creating position packet: {}. Skipping beacon.", e);
             return true; // not a connection failure — keep the connection
-        },
+        }
     };
 
     info!("xmitting: {}", posit_text);
-    match timeout(WRITE_TIMEOUT, write_half.write_all(format!("{}\r\n", posit_text).as_bytes())).await {
+    match timeout(
+        WRITE_TIMEOUT,
+        write_half.write_all(format!("{}\r\n", posit_text).as_bytes()),
+    )
+    .await
+    {
         Ok(Ok(())) => true,
         Ok(Err(e)) => {
             warn!("Write to APRS-IS failed: {}", e);
             false
-        },
+        }
         Err(_elapsed) => {
-            warn!("Write to APRS-IS timed out after {}s, reconnecting", WRITE_TIMEOUT.as_secs());
+            warn!(
+                "Write to APRS-IS timed out after {}s, reconnecting",
+                WRITE_TIMEOUT.as_secs()
+            );
             false
-        },
+        }
     }
 }
 
 /// Resolves the beacon location from the latest GPSD fix, or `None` if there is
 /// no fresh fix. Altitude falls back to the configured value when the fix lacks one.
-fn gpsd_beacon_location(gps_state: &RwLock<Option<GpsFix>>, fallback_alt: Option<f64>) -> Option<Location> {
+fn gpsd_beacon_location(
+    gps_state: &RwLock<Option<GpsFix>>,
+    fallback_alt: Option<f64>,
+) -> Option<Location> {
     let guard = gps_state.read().ok()?;
     let fix = guard.as_ref()?;
     if fix.is_fresh() {
@@ -71,10 +92,13 @@ fn gpsd_beacon_location(gps_state: &RwLock<Option<GpsFix>>, fallback_alt: Option
     }
 }
 
-
 /// Main APRS-IS task: manages the TCP connection and coordinates igating, beaconing, and telemetry.
-pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: CancellationToken, config: Arc<Config>, gps_state: Arc<RwLock<Option<GpsFix>>>) -> Result<(), RtpigateError> {
-
+pub async fn aprsis_task(
+    data_channel: broadcast::Sender<DataItem>,
+    token: CancellationToken,
+    config: Arc<Config>,
+    gps_state: Arc<RwLock<Option<GpsFix>>>,
+) -> Result<(), RtpigateError> {
     info!("Started");
 
     // subscribe to the channels
@@ -112,29 +136,44 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let mut lifetime_lagged_drops: u64 = 0;
 
     // data series
-    let mut rf_received_series = DataSeries { name: String::from("rf_received"), data: VecDeque::new() };
-    let mut dropped_series = DataSeries { name: String::from("packets_dropped"), data: VecDeque::new() };
-    let mut igated_series = DataSeries { name: String::from("packets_igated"), data: VecDeque::new() };
-    let mut reconnect_series = DataSeries { name: String::from("aprsis_reconnects"), data: VecDeque::new() };
+    let mut rf_received_series = DataSeries {
+        name: String::from("rf_received"),
+        data: VecDeque::new(),
+    };
+    let mut dropped_series = DataSeries {
+        name: String::from("packets_dropped"),
+        data: VecDeque::new(),
+    };
+    let mut igated_series = DataSeries {
+        name: String::from("packets_igated"),
+        data: VecDeque::new(),
+    };
+    let mut reconnect_series = DataSeries {
+        name: String::from("aprsis_reconnects"),
+        data: VecDeque::new(),
+    };
 
     // the interval for when to send statistics
     let mut telemetry_interval = interval(Duration::from_secs(15));
-
 
     // get the hostname of the APRS-IS host
     let host: String = match &config.aprsis.host {
         Some(h) => h.clone(),
         None => {
-            return Err(RtpigateError::Config("Unable to determine APRS-IS host".into()));
-        },
+            return Err(RtpigateError::Config(
+                "Unable to determine APRS-IS host".into(),
+            ));
+        }
     };
 
     // get the port number of the connection to the APRS-IS host
     let port: u32 = match &config.aprsis.port {
         Some(p) => *p,
         None => {
-            return Err(RtpigateError::Config("Unable to determine APRS-IS port number".into()));
-        },
+            return Err(RtpigateError::Config(
+                "Unable to determine APRS-IS port number".into(),
+            ));
+        }
     };
 
     // construct the hostname:port string
@@ -147,8 +186,10 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let callsign: String = match &config.station.callsign {
         Some(c) => c.clone(),
         None => {
-            return Err(RtpigateError::Config("Unable to determine station callsign".into()));
-        },
+            return Err(RtpigateError::Config(
+                "Unable to determine station callsign".into(),
+            ));
+        }
     };
 
     // is beaconing enabled?
@@ -193,16 +234,13 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     let rw = config.passcode_isvalid();
 
     // threshold in secs of how often we need to send telemetry data
-    let telemetry_threshold = match config.aprsis.threshold {
-        Some(n) => n,
-        None => 600,
-    };
+    let telemetry_threshold = config.aprsis.threshold.unwrap_or(600);
 
     match rw {
         true => {
             info!("Beaconing: {}, Igating: {}", beaconing, igating);
             info!("Posit & Telemetry threshold: {}", telemetry_threshold);
-        },
+        }
         false => info!("Aprsis passcode is invalid.  Igating and beaconing to aprsis is disabled."),
     }
 
@@ -220,7 +258,6 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     // sequence number
     let mut sequence: u32 = igate::read_telemetry_file(telemetry_file).await?;
 
-
     // duplicate packet suppression: maps "source:info" to the time it was last igated
     let mut dedup_cache: HashMap<String, i64> = HashMap::new();
     const DEDUP_TTL_SECS: i64 = 30;
@@ -236,7 +273,6 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
     // outer aprs-is connection loop
     loop {
-
         // check if the main program has requested a shutdown
         if token.is_cancelled() {
             break;
@@ -246,50 +282,66 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
         let mut addrs = match tokio::net::lookup_host(&address).await {
             Ok(a) => a,
             Err(e) => {
-                warn!("Unable to resolve address, {}. {}. Retrying in {}s...", address, e, backoff_secs);
+                warn!(
+                    "Unable to resolve address, {}. {}. Retrying in {}s...",
+                    address, e, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         let sock_addr = match addrs.next() {
             Some(a) => a,
             None => {
-                warn!("No valid socket address found for {}. Retrying in {}s...", address, backoff_secs);
+                warn!(
+                    "No valid socket address found for {}. Retrying in {}s...",
+                    address, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         // create a TCP stream (with bounded connect timeout)
-        let socket: TcpStream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(sock_addr)).await {
+        let socket: TcpStream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(sock_addr)).await
+        {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
-                warn!("Failed to connect to {}:{}: {}. Retrying in {}s...", host, port, e, backoff_secs);
+                warn!(
+                    "Failed to connect to {}:{}: {}. Retrying in {}s...",
+                    host, port, e, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
             Err(_elapsed) => {
-                warn!("Connect to {}:{} timed out after {}s. Retrying in {}s...", host, port, CONNECT_TIMEOUT.as_secs(), backoff_secs);
+                warn!(
+                    "Connect to {}:{} timed out after {}s. Retrying in {}s...",
+                    host,
+                    port,
+                    CONNECT_TIMEOUT.as_secs(),
+                    backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         // Enable TCP keepalive so a half-open connection (silent network drop, NAT
@@ -313,7 +365,10 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
         } else {
             total_reconnects += 1;
             reconnects_this_interval += 1;
-            info!("APRS-IS reconnected (total reconnects: {})", total_reconnects);
+            info!(
+                "APRS-IS reconnected (total reconnects: {})",
+                total_reconnects
+            );
         }
 
         // split the socket into read and write halves
@@ -365,7 +420,6 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
 
         // inner loop:  loop forever reading data from the channels and the aprs-is server
         loop {
-
             let mut raw = Vec::new();
 
             tokio::select! {
@@ -497,15 +551,15 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                                             let dedup_key = format!("{}:{}", p.source, p.info);
                                             let now_ts = Local::now().timestamp();
 
-                                            if let Some(last_ts) = dedup_cache.get(&dedup_key) {
-                                                if now_ts - last_ts < DEDUP_TTL_SECS {
-                                                    debug!("Suppressing duplicate: {}", p.raw);
-                                                    dropped += 1;
-                                                    packets_dropped += 1;
-                                                    lifetime_packets_dropped += 1;
-                                                    lifetime_drops_duplicate += 1;
-                                                    continue;
-                                                }
+                                            if let Some(last_ts) = dedup_cache.get(&dedup_key)
+                                                && now_ts - last_ts < DEDUP_TTL_SECS
+                                            {
+                                                debug!("Suppressing duplicate: {}", p.raw);
+                                                dropped += 1;
+                                                packets_dropped += 1;
+                                                lifetime_packets_dropped += 1;
+                                                lifetime_drops_duplicate += 1;
+                                                continue;
                                             }
 
                                             // reform packet into a byte string suitable for xmitting to an
@@ -708,9 +762,7 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
                 }
 
             } // tokio::select
-
         } // inner loop
-
     } // outer loop
 
     info!("Task ended.");
@@ -718,18 +770,26 @@ pub async fn aprsis_task(data_channel: broadcast::Sender<DataItem>, token: Cance
     Ok(())
 }
 
-
 /// Using the open socket and bufreader stream, attempt to log into the APRS-IS server.
 /// The `rw` parameter indicates whether we expect a verified (read-write) connection.
-async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReader<tcp::OwnedReadHalf>, loginstring: &str, host: &str, port: &u32, rw: bool) -> Result<bool, RtpigateError> {
-
+async fn login_to_aprsis(
+    writer: &mut tcp::OwnedWriteHalf,
+    reader: &mut BufReader<tcp::OwnedReadHalf>,
+    loginstring: &str,
+    host: &str,
+    port: &u32,
+    rw: bool,
+) -> Result<bool, RtpigateError> {
     // read the version line from the aprsis server to ensure a proper connection
     let mut raw = String::new();
 
     match reader.read_line(&mut raw).await {
         Ok(0) => {
-            return Err(RtpigateError::Network(format!("Connection closed by {}:{} before login", host, port)));
-        },
+            return Err(RtpigateError::Network(format!(
+                "Connection closed by {}:{} before login",
+                host, port
+            )));
+        }
         Ok(_numbytes) => {
             debug!("{}:{}: {}", host, port, raw.trim_end());
 
@@ -742,31 +802,46 @@ async fn login_to_aprsis(writer: &mut tcp::OwnedWriteHalf, reader: &mut BufReade
 
             match reader.read_line(&mut r).await {
                 Ok(0) => {
-                    return Err(RtpigateError::Network(format!("Connection closed by {}:{} during login", host, port)));
-                },
+                    return Err(RtpigateError::Network(format!(
+                        "Connection closed by {}:{} during login",
+                        host, port
+                    )));
+                }
                 Ok(_n) => {
                     debug!("{}:{}: {}", host, port, r.trim_end());
 
                     // verify login response if we expect a read-write connection
                     let response_lower = r.to_lowercase();
                     if rw && response_lower.contains("unverified") {
-                        warn!("APRS-IS login response indicates unverified: {}", r.trim_end());
+                        warn!(
+                            "APRS-IS login response indicates unverified: {}",
+                            r.trim_end()
+                        );
                         return Ok(false);
                     }
                     if rw && !response_lower.contains("verified") {
-                        warn!("APRS-IS login response missing verification: {}", r.trim_end());
+                        warn!(
+                            "APRS-IS login response missing verification: {}",
+                            r.trim_end()
+                        );
                         return Ok(false);
                     }
-                },
+                }
 
                 Err(e) => {
-                    return Err(RtpigateError::Network(format!("Error reading login response from {}:{}: {}", host, port, e)));
+                    return Err(RtpigateError::Network(format!(
+                        "Error reading login response from {}:{}: {}",
+                        host, port, e
+                    )));
                 }
             }
-        },
+        }
 
         Err(e) => {
-            return Err(RtpigateError::Network(format!("Error reading from {}:{}: {}", host, port, e)));
+            return Err(RtpigateError::Network(format!(
+                "Error reading from {}:{}: {}",
+                host, port, e
+            )));
         }
     }
 

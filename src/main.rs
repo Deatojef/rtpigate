@@ -1,30 +1,35 @@
 // main.rs
 
 use axum::{
-    extract::{State, FromRef},
-    response::{sse::Event, Json, Sse},
-    routing::get,
     Router,
+    extract::{FromRef, State},
+    response::{Json, Sse, sse::Event},
+    routing::get,
 };
-use tower_http::services::ServeDir;
-use tokio::{sync::broadcast, task::JoinSet};
-use tokio::signal::unix::{signal, SignalKind};
-use tokio_util::sync::CancellationToken;
-use tokio_stream::{Stream, wrappers::BroadcastStream, StreamExt};
-use std::{collections::VecDeque, sync::{Arc, RwLock}, error::Error, convert::Infallible};
 use chrono::Local;
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    error::Error,
+    sync::{Arc, RwLock},
+};
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::{sync::broadcast, task::JoinSet};
+use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
+use tokio_util::sync::CancellationToken;
+use tower_http::services::ServeDir;
 
 // for logging
 use flexi_logger::Logger;
-use log::{info, warn, error, debug};
+use log::{debug, error, info, warn};
 
 mod error;
 
 mod config;
-use config::{Config, DataItem, PublicConfig, APRSISPasscode, GpsFix, PositionSource};
+use config::{APRSISPasscode, Config, DataItem, GpsFix, PositionSource, PublicConfig};
 
 mod stream;
-use stream::{rtp_listener, RTPPacket};
+use stream::{RTPPacket, rtp_listener};
 
 mod aprs_is;
 use aprs_is::aprsis_task;
@@ -38,8 +43,7 @@ mod history;
 use history::{HistoryStore, StatBucket};
 
 mod sse;
-use sse::{sse_task, SSEEvent};
-
+use sse::{SSEEvent, sse_task};
 
 // for the axum application state
 #[derive(Clone)]
@@ -74,12 +78,9 @@ impl FromRef<AppState> for Arc<RwLock<HistoryStore>> {
     }
 }
 
-
 // Marks the `main` function as the entry point for a Tokio runtime.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
-
     // resolve config file path: CLI arg > ./config.toml > /etc/rtpigate/config.toml
     let config_path = std::env::args().nth(1).unwrap_or_else(|| {
         if std::path::Path::new("config.toml").exists() {
@@ -130,15 +131,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         for err in &validation_errors {
             error!("Config error: {}", err);
         }
-        error!("Fix the above configuration errors in {} and restart.", config_path);
+        error!(
+            "Fix the above configuration errors in {} and restart.",
+            config_path
+        );
         std::process::exit(1);
     }
 
     // validate passcode if APRS-IS is enabled with igating or beaconing
     if config.aprsis.enabled == Some(true) {
-        let needs_write = config.aprsis.igating == Some(true) || config.aprsis.beaconing == Some(true);
+        let needs_write =
+            config.aprsis.igating == Some(true) || config.aprsis.beaconing == Some(true);
         if needs_write && !config.passcode_isvalid() {
-            error!("APRS-IS passcode is invalid for callsign {:?}. Igating and/or beaconing require a valid passcode.", config.station.callsign);
+            error!(
+                "APRS-IS passcode is invalid for callsign {:?}. Igating and/or beaconing require a valid passcode.",
+                config.station.callsign
+            );
             std::process::exit(1);
         }
     }
@@ -147,7 +155,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let shared_config = Arc::new(config);
 
     //-------------- end:  reading configuration -------
-
 
     // create a JoinSet to collect the handles from tasks being started
     let mut task_set = JoinSet::new();
@@ -166,10 +173,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //
     let (sse_tx, mut _sse_rx) = broadcast::channel::<SSEEvent>(128);
 
-
     // The expected number of tasks...incremented as tasks are spawned.
     let mut expected_tasks = 0;
-
 
     //#################
     // 24h rolling log of satellite packets, shared between the RTP listener (writer)
@@ -205,28 +210,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     expected_tasks += 1;
 
-
     //#################
     // aprsis_task task
     //#################
-    if let Some(aprsis) = shared_config.aprsis.enabled {
+    if shared_config.aprsis.enabled == Some(true) {
+        let aprsis_tx_sender = data_tx.clone();
+        let aprsis_config = Arc::clone(&shared_config);
+        let aprsis_token = cancel_token.clone();
+        let aprsis_gps_state = Arc::clone(&gps_state);
 
-        if aprsis {
-            let aprsis_tx_sender = data_tx.clone();
-            let aprsis_config = Arc::clone(&shared_config);
-            let aprsis_token = cancel_token.clone();
-            let aprsis_gps_state = Arc::clone(&gps_state);
+        task_set.spawn(async move {
+            if let Err(e) = aprsis_task(
+                aprsis_tx_sender,
+                aprsis_token,
+                aprsis_config,
+                aprsis_gps_state,
+            )
+            .await
+            {
+                error!("Unable to create aprsis task: {}", e);
+            }
+        });
 
-            task_set.spawn(async move {
-                if let Err(e) = aprsis_task(aprsis_tx_sender, aprsis_token, aprsis_config, aprsis_gps_state).await {
-                    error!("Unable to create aprsis task: {}", e);
-                }
-            });
-
-            expected_tasks += 1;
-        }
+        expected_tasks += 1;
     }
-
 
     //#################
     // gpsd_task task — only spawned when GPSD is the position source
@@ -238,14 +245,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let gpsd_gps_state = Arc::clone(&gps_state);
 
         task_set.spawn(async move {
-            if let Err(e) = gpsd_task(gpsd_tx_sender, gpsd_token, gpsd_config, gpsd_gps_state).await {
+            if let Err(e) = gpsd_task(gpsd_tx_sender, gpsd_token, gpsd_config, gpsd_gps_state).await
+            {
                 error!("Unable to create gpsd task: {}", e);
             }
         });
 
         expected_tasks += 1;
     }
-
 
     //#################
     // sse_task task
@@ -257,17 +264,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sse_history = Arc::clone(&history_store);
 
     task_set.spawn(async move {
-        if let Err(e) = sse_task(sse_tx_sender, sse_channel_tx_sender, sse_token, sse_config, sse_history).await {
+        if let Err(e) = sse_task(
+            sse_tx_sender,
+            sse_channel_tx_sender,
+            sse_token,
+            sse_config,
+            sse_history,
+        )
+        .await
+        {
             error!("Unable to create sse task: {}", e);
         }
     });
 
     expected_tasks += 1;
 
-
     // if all expected tasks are running then continue with starting a listener for SSE
     if task_set.len() == expected_tasks {
-
         // the application state
         let mut public_config = shared_config.to_public();
         let started_at = Local::now();
@@ -282,7 +295,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         // resolve frontend assets path
-        let frontend_dir = shared_config.http.as_ref()
+        let frontend_dir = shared_config
+            .http
+            .as_ref()
             .and_then(|h| h.frontend.as_deref())
             .unwrap_or("frontend");
         let assets_dir = format!("{}/assets", frontend_dir);
@@ -300,7 +315,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .with_state(app_state);
 
         // HTTP listen address (configurable, defaults to localhost for security)
-        let listen_addr = shared_config.http.as_ref()
+        let listen_addr = shared_config
+            .http
+            .as_ref()
             .and_then(|h| h.listen.as_deref())
             .unwrap_or("127.0.0.1:3000");
         let listener = tokio::net::TcpListener::bind(listen_addr).await?;
@@ -395,7 +412,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 // config_handler - returns sanitized config as JSON (no passcode)
 async fn config_handler(State(config): State<Arc<RwLock<PublicConfig>>>) -> Json<PublicConfig> {
     let cfg = config.read().unwrap().clone();
@@ -427,21 +443,20 @@ async fn history_handler(
 }
 
 // sse_handler
-async fn sse_handler(State(tx): State<broadcast::Sender<SSEEvent>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-
+async fn sse_handler(
+    State(tx): State<broadcast::Sender<SSEEvent>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // the channel to receive updates from
     let rx = tx.subscribe();
 
     // create the broadcast stream
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|item| {
-            match item {
-                Ok(event) => Some(
-                    Ok(Event::default().event(event.event).json_data(event.data).unwrap())
-                    ),
-                Err(_) => None,
-            }
-        });
+    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
+        Ok(event) => Some(Ok(Event::default()
+            .event(event.event)
+            .json_data(event.data)
+            .unwrap())),
+        Err(_) => None,
+    });
 
     // return the new SSE stream
     Sse::new(stream)

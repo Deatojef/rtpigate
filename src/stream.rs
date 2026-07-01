@@ -1,16 +1,28 @@
-use tokio::{sync::broadcast, time::{interval, sleep, Duration}};
-use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, net::Ipv4Addr, sync::Arc, fmt, time::Instant};
-use serde::Serialize;
 use chrono::{DateTime, Local, Utc};
+use serde::Serialize;
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+    net::Ipv4Addr,
+    sync::Arc,
+    time::Instant,
+};
+use tokio::{
+    sync::broadcast,
+    time::{Duration, interval, sleep},
+};
+use tokio_util::sync::CancellationToken;
 
-use log::{info, warn, error, debug};
+use log::{debug, error, info, warn};
 
-use aprs_stream::{AprsFrame, Subscriber};
+use aprs_decode::packet::{AprsData, AprsPacket as DecodedPacket};
 use aprs_stream::subscribe::{RecvError, SubscribeConfig};
-use aprs_decode::packet::{AprsPacket as DecodedPacket, AprsData};
+use aprs_stream::{AprsFrame, Subscriber};
 
-use crate::config::{Config, AppTelemetry, PacketTelemetry, SlicerTelemetry, SlicerInterval, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
+use crate::config::{
+    AppTelemetry, Config, DataItem, DataPoint, DataSeries, FrequencyCount, PacketTelemetry,
+    SlicerInterval, SlicerTelemetry, StationEntry, StationTelemetry,
+};
 use crate::error::RtpigateError;
 
 // Classify a slicer's space-gain into a twist zone, mirroring the frontend's
@@ -20,7 +32,13 @@ use crate::error::RtpigateError;
 // wire (RfMeta::slicer_gains) instead of being derived from a local decoder
 // config — the producer (aprs-streamd) owns the demodulator.
 fn slicer_zone(g: f32) -> u8 {
-    if g < 0.8 { 0 } else if g < 1.25 { 1 } else { 2 }
+    if g < 0.8 {
+        0
+    } else if g < 1.25 {
+        1
+    } else {
+        2
+    }
 }
 
 // Per-packet "twist" summary feeding the Recent Packets twist bar. Twist is the
@@ -32,9 +50,9 @@ fn slicer_zone(g: f32) -> u8 {
 // needs no slicer-telemetry to render.
 #[derive(Debug, Clone, Serialize)]
 pub struct TwistInfo {
-    pub cols: usize,      // bar width = number of slicers in the bank
-    pub mask: u16,        // bit i set = slicer i decoded this frame (a lit cell)
-    pub zones: Vec<u8>,   // per-slicer twist zone: 0 = pre-emph, 1 = flat, 2 = de-emph
+    pub cols: usize,    // bar width = number of slicers in the bank
+    pub mask: u16,      // bit i set = slicer i decoded this frame (a lit cell)
+    pub zones: Vec<u8>, // per-slicer twist zone: 0 = pre-emph, 1 = flat, 2 = de-emph
     // Mean twist (dB) across the slicers that decoded this frame: 20*log10(gain).
     // Negative = space louder (pre-emph), positive = mark louder (de-emph), 0 =
     // flat. A human-readable point estimate of the frame's twist for the popup.
@@ -44,7 +62,6 @@ pub struct TwistInfo {
 // the packet structure (created by the stream listener for incoming frames)
 #[derive(Debug, Clone, Serialize)]
 pub struct RTPPacket {
-
     // when we initial received this packet over the network
     pub receivetime: DateTime<Local>,
 
@@ -161,9 +178,15 @@ impl RTPPacket {
         // would produce a double comma (SRC>DST,,qAO,...), which APRS-IS parsers
         // treat inconsistently, so omit the path element entirely in that case.
         if self.path.is_empty() {
-            format!("{}>{},qAO,{}:{}", self.source, self.destination, callsign, self.info)
+            format!(
+                "{}>{},qAO,{}:{}",
+                self.source, self.destination, callsign, self.info
+            )
         } else {
-            format!("{}>{},{},qAO,{}:{}", self.source, self.destination, self.path, callsign, self.info)
+            format!(
+                "{}>{},{},qAO,{}:{}",
+                self.source, self.destination, self.path, callsign, self.info
+            )
         }
     }
 
@@ -177,7 +200,10 @@ impl RTPPacket {
         let header = if self.path.is_empty() {
             format!("{}>{},qAO,{}:", self.source, self.destination, callsign)
         } else {
-            format!("{}>{},{},qAO,{}:", self.source, self.destination, self.path, callsign)
+            format!(
+                "{}>{},{},qAO,{}:",
+                self.source, self.destination, self.path, callsign
+            )
         };
         let mut out = header.into_bytes();
         out.extend_from_slice(&self.info_bytes);
@@ -186,16 +212,17 @@ impl RTPPacket {
 }
 
 // type of packets
+// RTP is an intentional historical name retained through the aprs-stream refactor
+// (cf. the `rtp_listener` task name); we don't rename it to `Rtp` here.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone)]
 pub enum Packet {
     RTP(RTPPacket),
 }
 
-
 // Constant slices for packet classification — no heap allocation per packet
 const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
 const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
-
 
 // Subscribes to the decoded-APRS multicast stream published by `aprs-streamd`
 // (via the shared `aprs-stream` crate) and maps each typed frame into the
@@ -210,7 +237,6 @@ pub async fn rtp_listener(
     config: Arc<Config>,
     sat_packet_log: Arc<std::sync::RwLock<VecDeque<RTPPacket>>>,
 ) -> Result<(), RtpigateError> {
-
     info!("Started");
 
     // satellite frequencies sourced from config (default [145.825] if unset)
@@ -282,7 +308,6 @@ pub async fn rtp_listener(
 
     // outer reconnection loop
     loop {
-
         if token.is_cancelled() {
             break;
         }
@@ -299,23 +324,28 @@ pub async fn rtp_listener(
             Ok(sub) => {
                 backoff_secs = 5;
                 sub
-            },
+            }
             Err(e) => {
-                error!("APRS stream subscribe failed: {}. Retrying in {}s...", e, backoff_secs);
+                error!(
+                    "APRS stream subscribe failed: {}. Retrying in {}s...",
+                    e, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
-        info!("Subscribed to APRS stream {}:{}", config.stream.group, config.stream.port);
+        info!(
+            "Subscribed to APRS stream {}:{}",
+            config.stream.group, config.stream.port
+        );
 
         // inner frame read loop
         loop {
-
             tokio::select! {
 
                 // was this thread canceled?
@@ -410,12 +440,12 @@ pub async fn rtp_listener(
 
                     // Emit station statistics
                     let mut stations: Vec<StationEntry> = station_map.values().cloned().collect();
-                    stations.sort_by(|a, b| b.count.cmp(&a.count));
+                    stations.sort_by_key(|s| std::cmp::Reverse(s.count));
 
                     let mut frequencies: Vec<FrequencyCount> = freq_counts.iter()
                         .map(|(f, (c, _))| FrequencyCount { frequency: f.clone(), count: *c })
                         .collect();
-                    frequencies.sort_by(|a, b| b.count.cmp(&a.count));
+                    frequencies.sort_by_key(|f| std::cmp::Reverse(f.count));
 
                     let station_data = StationTelemetry {
                         name: String::from("station_statistics"),
@@ -449,15 +479,16 @@ pub async fn rtp_listener(
                             // Learn the slicer bank size and gain ladder from the
                             // stream on the first frame that carries it. Static for
                             // the producer session, so this runs once.
-                            if slicer_count == 0 {
-                                if let Some(g) = frame.rf.slicer_gains.as_ref().filter(|g| !g.is_empty()) {
-                                    slicer_count = g.len();
-                                    slicer_gains = g.clone();
-                                    slicer_zones = g.iter().map(|x| slicer_zone(*x)).collect();
-                                    slicer_db = g.iter().map(|x| 20.0 * x.log10()).collect();
-                                    slicer_interval = vec![0; slicer_count];
-                                    lifetime_slicer_hits = vec![0; slicer_count];
-                                }
+                            if slicer_count == 0
+                                && let Some(g) =
+                                    frame.rf.slicer_gains.as_ref().filter(|g| !g.is_empty())
+                            {
+                                slicer_count = g.len();
+                                slicer_gains = g.clone();
+                                slicer_zones = g.iter().map(|x| slicer_zone(*x)).collect();
+                                slicer_db = g.iter().map(|x| 20.0 * x.log10()).collect();
+                                slicer_interval = vec![0; slicer_count];
+                                lifetime_slicer_hits = vec![0; slicer_count];
                             }
 
                             // map the stream frame into our internal RTPPacket. A
@@ -483,9 +514,9 @@ pub async fn rtp_listener(
                             if packet.slicer_mask != 0 && slicer_count > 0 {
                                 // mean twist (dB) over the slicers that fired
                                 let (mut sum, mut n) = (0.0f32, 0u32);
-                                for i in 0..slicer_count {
+                                for (i, db) in slicer_db.iter().enumerate() {
                                     if packet.slicer_mask & (1 << i) != 0 {
-                                        sum += slicer_db[i];
+                                        sum += *db;
                                         n += 1;
                                     }
                                 }
@@ -583,10 +614,10 @@ pub async fn rtp_listener(
 
                             // append to the 24h satellite packet log (newest-first
                             // ordering is maintained at read time).
-                            if p.is_satellite {
-                                if let Ok(mut log) = sat_packet_log.write() {
-                                    log.push_back(p.clone());
-                                }
+                            if p.is_satellite
+                                && let Ok(mut log) = sat_packet_log.write()
+                            {
+                                log.push_back(p.clone());
                             }
 
                             // attempt to send this packet to the channel so downstream
@@ -620,7 +651,6 @@ pub async fn rtp_listener(
     Ok(())
 }
 
-
 // A mapped RTPPacket together with the APRS symbol table/code parsed from the
 // same packet (used to populate per-station symbol info).
 struct MappedPacket {
@@ -639,7 +669,6 @@ struct MappedPacket {
 // Returns None if the frame carries no `ax25_meta` (a pre-v2 producer): without
 // it we can't recover source/dest/heard faithfully, so the caller skips the frame.
 fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
-
     let meta = frame.ax25_meta.as_ref()?;
 
     // wall-clock receive time reconstructed from the frame's epoch-millis stamp;
@@ -653,7 +682,8 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     // The verbatim 8-bit info field, sliced out of the raw AX.25 using the
     // producer's offset — no AX.25 re-parsing. `info` is the lossy-UTF-8 render
     // for display/dedup/SSE; `info_bytes` is the faithful payload for igating.
-    let info_bytes: Vec<u8> = meta.info_offset
+    let info_bytes: Vec<u8> = meta
+        .info_offset
         .and_then(|off| frame.ax25.get(off as usize..))
         .map(|s| s.to_vec())
         .unwrap_or_default();
@@ -663,8 +693,15 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     // viapath and filtered digipeater path (real callsigns only). The path is the
     // via callsigns joined without heard (`*`) markers, matching the form the
     // igate reformer expects.
-    let path = meta.via.iter().map(|h| h.call.clone()).collect::<Vec<_>>().join(",");
-    let digipeater_path: Vec<String> = meta.via.iter()
+    let path = meta
+        .via
+        .iter()
+        .map(|h| h.call.clone())
+        .collect::<Vec<_>>()
+        .join(",");
+    let digipeater_path: Vec<String> = meta
+        .via
+        .iter()
         .map(|h| &h.call)
         .filter(|s| EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
         .cloned()
@@ -672,7 +709,8 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     let hops = digipeater_path.len() as u32;
 
     // APRS data type identifier (first info byte)
-    let ptype: char = meta.dti
+    let ptype: char = meta
+        .dti
         .map(|b| b as char)
         .or_else(|| info.chars().next())
         .unwrap_or('\0');
@@ -681,10 +719,15 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     let was_digipeated = meta.via.iter().any(|h| h.heard);
 
     // RF-only packets must not be igated
-    let rfonly = meta.via.iter().any(|h| RFONLY_ADDRS.iter().any(|x| h.call.contains(x)));
+    let rfonly = meta
+        .via
+        .iter()
+        .any(|h| RFONLY_ADDRS.iter().any(|x| h.call.contains(x)));
 
     // frequency in MHz from the RF metadata (or the SSRC, ka9q's kHz convention)
-    let frequency = frame.rf.frequency_hz
+    let frequency = frame
+        .rf
+        .frequency_hz
         .map(|hz| hz as f64 / 1_000_000.0)
         .or_else(|| frame.capture.ssrc.map(|s| s as f64 / 1000.0))
         .unwrap_or(0.0);
@@ -692,7 +735,9 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     // Canonical TNC2 text for display, reconstructed from the parsed packet (this
     // includes the heard `*` markers). Falls back to a hand-built header when the
     // frame couldn't be typed or re-encoded.
-    let raw = frame.parsed.as_ref()
+    let raw = frame
+        .parsed
+        .as_ref()
         .and_then(|p| p.encode_textual().ok())
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_else(|| {
@@ -709,7 +754,9 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     let mut object_name: Option<String> = None;
     let (mut symbol_table, mut symbol_code) = (None, None);
 
-    let parsed = frame.parsed.clone()
+    let parsed = frame
+        .parsed
+        .clone()
         .or_else(|| DecodedPacket::decode_textual(raw.as_bytes()).ok());
     if let Some(parsed) = parsed {
         match parsed.data {
@@ -719,7 +766,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 altitude_ft = pos.position.altitude.map(|a| a.feet);
                 symbol_table = Some(pos.position.symbol.table);
                 symbol_code = Some(pos.position.symbol.code);
-            },
+            }
             AprsData::MicE(mice) => {
                 latitude = Some(mice.latitude.value());
                 longitude = Some(mice.longitude.value());
@@ -727,7 +774,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 altitude_ft = mice.altitude_m.map(|m| m * 3.28084);
                 symbol_table = Some(mice.symbol_table);
                 symbol_code = Some(mice.symbol_code);
-            },
+            }
             AprsData::Object(obj) => {
                 object_name = Some(String::from_utf8_lossy(&obj.name).to_string());
                 latitude = Some(obj.position.latitude.value());
@@ -735,7 +782,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 altitude_ft = obj.position.altitude.map(|a| a.feet);
                 symbol_table = Some(obj.position.symbol.table);
                 symbol_code = Some(obj.position.symbol.code);
-            },
+            }
             AprsData::Item(item) => {
                 object_name = Some(String::from_utf8_lossy(&item.name).to_string());
                 latitude = Some(item.position.latitude.value());
@@ -743,8 +790,8 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 altitude_ft = item.position.altitude.map(|a| a.feet);
                 symbol_table = Some(item.position.symbol.table);
                 symbol_code = Some(item.position.symbol.code);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
@@ -778,5 +825,9 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
         twist: None,
     };
 
-    Some(MappedPacket { packet, symbol_table, symbol_code })
+    Some(MappedPacket {
+        packet,
+        symbol_table,
+        symbol_code,
+    })
 }

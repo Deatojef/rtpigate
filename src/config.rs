@@ -1,6 +1,12 @@
-use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fs, net::Ipv4Addr, ops::Add, time::{Duration, Instant}};
 use chrono::{DateTime, Local, Utc};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::VecDeque,
+    fs,
+    net::Ipv4Addr,
+    ops::Add,
+    time::{Duration, Instant},
+};
 
 use crate::error::RtpigateError;
 
@@ -12,6 +18,9 @@ pub enum DataItem {
     Tlm(AppTelemetry),
 }
 
+// The `Status` suffix is intentional — these variants map to the named SSE
+// telemetry events consumed by the frontend (e.g. `gps_status`).
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
 pub enum AppTelemetry {
     PacketStatus(PacketTelemetry),
@@ -33,7 +42,7 @@ pub struct GpsFix {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub alt_ft: Option<f64>,
-    pub mode: u8,               // 1 = no fix, 2 = 2D, 3 = 3D
+    pub mode: u8, // 1 = no fix, 2 = 2D, 3 = 3D
     pub sats_used: u32,
     pub sats_visible: u32,
     pub hdop: Option<f64>,
@@ -55,7 +64,7 @@ impl GpsFix {
 /// Snapshot of GPS health pushed to the frontend via the `gps_status` SSE event.
 #[derive(Serialize, Debug, Clone)]
 pub struct GpsTelemetry {
-    pub name: String,                   // "gps_status"
+    pub name: String, // "gps_status"
     pub timestamp: DateTime<Local>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
@@ -117,7 +126,7 @@ pub struct AprsisTelemetry {
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct SlicerInterval {
     pub timestamp: DateTime<Local>,
-    pub counts: Vec<u32>,           // length == slicer_count
+    pub counts: Vec<u32>, // length == slicer_count
 }
 
 // Slicer-diversity telemetry: a rolling window of per-slicer demodulation
@@ -125,13 +134,13 @@ pub struct SlicerInterval {
 // packets demodulator slicer `i` recovered during that 15s window.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct SlicerTelemetry {
-    pub name: String,               // "slicer_statistics"
+    pub name: String, // "slicer_statistics"
     pub timestamp: DateTime<Local>,
     pub microsecs: f64,
-    pub slicer_count: usize,        // number of heatmap columns (decoder config)
-    pub slicer_gains: Vec<f32>,     // per-slicer space-gain ladder (length slicer_count)
-    pub intervals: VecDeque<SlicerInterval>,   // last 10, oldest-first
-    pub lifetime_slicer_hits: Vec<u64>,        // per-slicer lifetime totals
+    pub slicer_count: usize,    // number of heatmap columns (decoder config)
+    pub slicer_gains: Vec<f32>, // per-slicer space-gain ladder (length slicer_count)
+    pub intervals: VecDeque<SlicerInterval>, // last 10, oldest-first
+    pub lifetime_slicer_hits: Vec<u64>, // per-slicer lifetime totals
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -259,13 +268,14 @@ impl GpsdConfig {
         self.port.unwrap_or(Self::DEFAULT_PORT)
     }
     pub fn move_threshold_deg(&self) -> f64 {
-        self.move_threshold_deg.unwrap_or(Self::DEFAULT_MOVE_THRESHOLD_DEG)
+        self.move_threshold_deg
+            .unwrap_or(Self::DEFAULT_MOVE_THRESHOLD_DEG)
     }
     pub fn min_beacon_secs(&self) -> u64 {
-        self.min_beacon_secs.unwrap_or(Self::DEFAULT_MIN_BEACON_SECS)
+        self.min_beacon_secs
+            .unwrap_or(Self::DEFAULT_MIN_BEACON_SECS)
     }
 }
-
 
 /// How much positional precision to encode in beacon position packets via the
 /// APRS 1.2 `!DAO!` extension.
@@ -413,13 +423,10 @@ pub trait APRSISPasscode {
     fn passcode_isvalid(&self) -> bool;
 }
 
-
 impl Config {
-
     // attempt to read the TOML syntax from the provided filename string returning a Config structure
     // if successful.
     pub fn from_file(filename: &str) -> Result<Config, RtpigateError> {
-
         // read in the config file
         let toml_string = fs::read_to_string(filename)?;
 
@@ -436,7 +443,7 @@ impl Config {
         match &self.station.callsign {
             Some(c) if c.is_empty() => errors.push("[station] callsign is empty".into()),
             None => errors.push("[station] callsign is required".into()),
-            _ => {},
+            _ => {}
         }
 
         // Stream group/port are required. The group must be a multicast address
@@ -453,23 +460,31 @@ impl Config {
         }
 
         // Location validation — lat/lon ranges
-        if let Some(lat) = self.location.lat {
-            if !(-90.0..=90.0).contains(&lat) {
-                errors.push(format!("[location] lat {} is out of range (-90 to 90)", lat));
-            }
+        if let Some(lat) = self.location.lat
+            && !(-90.0..=90.0).contains(&lat)
+        {
+            errors.push(format!(
+                "[location] lat {} is out of range (-90 to 90)",
+                lat
+            ));
         }
-        if let Some(lon) = self.location.lon {
-            if !(-180.0..=180.0).contains(&lon) {
-                errors.push(format!("[location] lon {} is out of range (-180 to 180)", lon));
-            }
+        if let Some(lon) = self.location.lon
+            && !(-180.0..=180.0).contains(&lon)
+        {
+            errors.push(format!(
+                "[location] lon {} is out of range (-180 to 180)",
+                lon
+            ));
         }
 
         // If APRS-IS is enabled, validate its required fields
         if self.aprsis.enabled == Some(true) {
             match &self.aprsis.host {
-                Some(h) if h.is_empty() => errors.push("[aprsis] host is empty but aprsis is enabled".into()),
+                Some(h) if h.is_empty() => {
+                    errors.push("[aprsis] host is empty but aprsis is enabled".into())
+                }
                 None => errors.push("[aprsis] host is required when aprsis is enabled".into()),
-                _ => {},
+                _ => {}
             }
             if self.aprsis.port.is_none() {
                 errors.push("[aprsis] port is required when aprsis is enabled".into());
@@ -478,9 +493,12 @@ impl Config {
             // If beaconing is enabled with the static config source, a fixed
             // location is required. With the GPSD source the position comes from
             // the live fix, so the static lat/lon/alt are optional.
-            if self.aprsis.beaconing == Some(true) && self.location.source == PositionSource::Config {
+            if self.aprsis.beaconing == Some(true) && self.location.source == PositionSource::Config
+            {
                 if self.location.lat.is_none() || self.location.lon.is_none() {
-                    errors.push("[location] lat and lon are required when beaconing is enabled".into());
+                    errors.push(
+                        "[location] lat and lon are required when beaconing is enabled".into(),
+                    );
                 }
                 if self.location.alt.is_none() {
                     errors.push("[location] alt is required when beaconing is enabled".into());
@@ -489,28 +507,33 @@ impl Config {
         }
 
         // GPSD validation — only meaningful when GPSD is the position source
-        if self.location.source == PositionSource::Gpsd {
-            if let Some(ref gpsd) = self.gpsd {
-                if let Some(threshold) = gpsd.move_threshold_deg {
-                    if threshold <= 0.0 {
-                        errors.push(format!("[gpsd] move_threshold_deg {} must be > 0", threshold));
-                    }
-                }
-                if let Some(secs) = gpsd.min_beacon_secs {
-                    if secs == 0 {
-                        errors.push("[gpsd] min_beacon_secs must be > 0".into());
-                    }
-                }
+        if self.location.source == PositionSource::Gpsd
+            && let Some(ref gpsd) = self.gpsd
+        {
+            if let Some(threshold) = gpsd.move_threshold_deg
+                && threshold <= 0.0
+            {
+                errors.push(format!(
+                    "[gpsd] move_threshold_deg {} must be > 0",
+                    threshold
+                ));
+            }
+            if let Some(secs) = gpsd.min_beacon_secs
+                && secs == 0
+            {
+                errors.push("[gpsd] min_beacon_secs must be > 0".into());
             }
         }
 
         // HTTP listen address validation
-        if let Some(ref http) = self.http {
-            if let Some(ref listen) = http.listen {
-                if !listen.contains(':') {
-                    errors.push(format!("[http] listen '{}' should be in host:port format", listen));
-                }
-            }
+        if let Some(ref http) = self.http
+            && let Some(ref listen) = http.listen
+            && !listen.contains(':')
+        {
+            errors.push(format!(
+                "[http] listen '{}' should be in host:port format",
+                listen
+            ));
         }
 
         errors
@@ -519,7 +542,6 @@ impl Config {
 
 impl APRSISLogin for Config {
     fn aprsis_login_string(&self) -> String {
-
         let callsign = match &self.station.callsign {
             Some(c) => c,
             None => &String::from("N0CAL"),
@@ -527,17 +549,15 @@ impl APRSISLogin for Config {
 
         // Only send the real passcode if it's valid; otherwise send -1 for read-only
         let passcode = if self.passcode_isvalid() {
-            match &self.aprsis.passcode { Some(m) => m.clone(), None => String::from("-1") }
+            match &self.aprsis.passcode {
+                Some(m) => m.clone(),
+                None => String::from("-1"),
+            }
         } else {
             String::from("-1")
         };
 
-        format!(
-            "user {} pass {} vers {}\r\n",
-            callsign,
-            passcode,
-            "1.0",
-        )
+        format!("user {} pass {} vers {}\r\n", callsign, passcode, "1.0",)
     }
 }
 
@@ -560,25 +580,25 @@ impl APRSISPasscode for Config {
     }
 }
 
-
 // function to compute the APRS-IS passcode of a provided string (i.e. a callsign).
 fn passcode(callsign: &str) -> i32 {
     let mut hash: i32 = 0x73e2;
 
     // loop over each character within the callsign until we hit a hyphen or the end of the string
     for (i, c) in callsign.to_uppercase().char_indices() {
-
         if c == '-' {
             break;
         }
 
-        let shift = match i % 2 { 0 => 8, _ => 0, };
+        let shift = match i % 2 {
+            0 => 8,
+            _ => 0,
+        };
         hash ^= (c as i32) << shift;
     }
 
     hash & 0x7fff
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -586,8 +606,14 @@ mod tests {
 
     fn fix(mode: u8, lat: Option<f64>, lon: Option<f64>, age: Duration) -> GpsFix {
         GpsFix {
-            lat, lon, alt_ft: None, mode,
-            sats_used: 0, sats_visible: 0, hdop: None, time: None,
+            lat,
+            lon,
+            alt_ft: None,
+            mode,
+            sats_used: 0,
+            sats_visible: 0,
+            hdop: None,
+            time: None,
             received_at: Instant::now() - age,
         }
     }
@@ -600,13 +626,21 @@ mod tests {
     #[test]
     fn stale_fix_is_not_fresh() {
         // older than GPS_FRESHNESS even though it is a valid 3D fix
-        assert!(!fix(3, Some(40.0), Some(-103.0), GPS_FRESHNESS + Duration::from_secs(5)).is_fresh());
+        assert!(
+            !fix(
+                3,
+                Some(40.0),
+                Some(-103.0),
+                GPS_FRESHNESS + Duration::from_secs(5)
+            )
+            .is_fresh()
+        );
     }
 
     #[test]
     fn nofix_and_missing_coords_are_not_fresh() {
         assert!(!fix(1, Some(40.0), Some(-103.0), Duration::from_secs(1)).is_fresh()); // no fix
-        assert!(!fix(3, None, Some(-103.0), Duration::from_secs(1)).is_fresh());       // missing lat
+        assert!(!fix(3, None, Some(-103.0), Duration::from_secs(1)).is_fresh()); // missing lat
     }
 
     #[test]

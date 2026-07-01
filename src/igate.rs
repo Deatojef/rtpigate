@@ -1,10 +1,10 @@
-use chrono::{Utc, Timelike};
+use chrono::{Timelike, Utc};
 use std::time::Duration;
 use tokio::{fs, io::AsyncWriteExt};
 
 use log::debug;
 
-use crate::config::{Location, DaoMode};
+use crate::config::{DaoMode, Location};
 use crate::error::RtpigateError;
 use crate::stream::RTPPacket;
 
@@ -19,7 +19,6 @@ fn base91_dao_char(rem_minutes: f64) -> char {
     let val = val.clamp(0, 90) as u8;
     (33 + val) as char
 }
-
 
 // ---- Packet filtering ----
 
@@ -62,7 +61,11 @@ pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
     // produces a harmless empty line on the wire (not injection).
     if [&p.source, &p.destination, &p.path, &p.info]
         .iter()
-        .any(|f| f.trim_end_matches(['\r', '\n']).bytes().any(|b| b == b'\r' || b == b'\n'))
+        .any(|f| {
+            f.trim_end_matches(['\r', '\n'])
+                .bytes()
+                .any(|b| b == b'\r' || b == b'\n')
+        })
     {
         return Some(DropReason::MalformedField);
     }
@@ -113,18 +116,24 @@ pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
     None
 }
 
-
 // ---- Position beacon construction ----
 
 /// Construct a position packet for beaconing to APRS-IS.
-pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<String>, overlay: &Option<String>, dao: DaoMode) -> Result<String, RtpigateError> {
-
+pub fn positpacket(
+    l: &Location,
+    callsign: &str,
+    name: &str,
+    symbol: &Option<String>,
+    overlay: &Option<String>,
+    dao: DaoMode,
+) -> Result<String, RtpigateError> {
     match (l.alt, l.lat, l.lon) {
         (Some(alt_ft), Some(lat), Some(lon)) => {
-
             // check for valid lat/lon/alt positions
             if alt_ft <= 0.0 || lat == 0.0 || lon == 0.0 {
-                return Err(RtpigateError::Validation("positpacket: Invalid lat/lon/alt".into()));
+                return Err(RtpigateError::Validation(
+                    "positpacket: Invalid lat/lon/alt".into(),
+                ));
             }
 
             // the time components
@@ -160,8 +169,20 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
 
             // For APRS, the position report represents latitude as ddmm.hhN/S
             // and longitude as dddmm.hhE/W (minutes to hundredths).
-            let lat_string = format!("{:02}{:02}.{:02}{}", lat_deg, lat_hund / 100, lat_hund % 100, lat_ns);
-            let lon_string = format!("{:03}{:02}.{:02}{}", lon_deg, lon_hund / 100, lon_hund % 100, lon_ew);
+            let lat_string = format!(
+                "{:02}{:02}.{:02}{}",
+                lat_deg,
+                lat_hund / 100,
+                lat_hund % 100,
+                lat_ns
+            );
+            let lon_string = format!(
+                "{:03}{:02}.{:02}{}",
+                lon_deg,
+                lon_hund / 100,
+                lon_hund % 100,
+                lon_ew
+            );
 
             // Optional !DAO! additional-precision extension (APRS spec 1.2, WGS84),
             // recovering precision the ddmm.hh base format drops:
@@ -174,15 +195,19 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
                     let lat_d = ((lat_rem * 1000.0) + 1e-6).floor().min(9.0) as u8;
                     let lon_d = ((lon_rem * 1000.0) + 1e-6).floor().min(9.0) as u8;
                     format!("!W{}{}!", lat_d, lon_d)
-                },
+                }
                 DaoMode::Base91 => {
-                    format!("!w{}{}!", base91_dao_char(lat_rem), base91_dao_char(lon_rem))
-                },
+                    format!(
+                        "!w{}{}!",
+                        base91_dao_char(lat_rem),
+                        base91_dao_char(lon_rem)
+                    )
+                }
             };
 
             // APRS symbols and overlays are convoluted nonsense.  Try and decipher...
             let overlay_string = match overlay {
-                Some(o) => format!("{}", o),
+                Some(o) => o.to_string(),
                 None => match symbol {
                     Some(s) => match s.chars().next() {
                         Some(c) => format!("{}", c),
@@ -219,14 +244,13 @@ pub fn positpacket(l: &Location, callsign: &str, name: &str, symbol: &Option<Str
             );
 
             Ok(packet_text)
-        },
-
-        _ => {
-            Err(RtpigateError::Validation("positpacket: Missing lat/lon/alt".into()))
         }
+
+        _ => Err(RtpigateError::Validation(
+            "positpacket: Missing lat/lon/alt".into(),
+        )),
     }
 }
-
 
 // ---- Telemetry ----
 
@@ -243,7 +267,7 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
             std::io::ErrorKind::NotFound => {
                 create_telemetry_file(filename).await?;
                 fs::File::open(filename).await?
-            },
+            }
             _ => return Err(RtpigateError::Io(e)),
         },
     };
@@ -252,7 +276,12 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
 
     let first_line = match reader.lines().next_line().await? {
         Some(line) => line,
-        None => return Err(RtpigateError::Parse(format!("Telemetry file {} is empty", filename))),
+        None => {
+            return Err(RtpigateError::Parse(format!(
+                "Telemetry file {} is empty",
+                filename
+            )));
+        }
     };
 
     let number = first_line.trim().parse::<u32>()?;
@@ -272,7 +301,6 @@ async fn create_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
     Ok(0)
 }
 
-
 // ---- APRS Telemetry encoding (quadratic coefficients) ----
 
 #[derive(Debug, Clone)]
@@ -285,10 +313,8 @@ pub struct APRSQuadratic {
 
 impl APRSQuadratic {
     pub fn new(orig_value: f64) -> APRSQuadratic {
-
         // if the original value is small (between -255 and +255) we forego the use of the "a" coefficient
-        if orig_value <= 255.0 && orig_value >= -255.0 {
-
+        if (-255.0..=255.0).contains(&orig_value) {
             let x = if orig_value >= 0.0 {
                 orig_value.floor()
             } else {
@@ -299,7 +325,12 @@ impl APRSQuadratic {
             let b = 1.0;
             let c = ((orig_value - x) * 1000000.0).round() / 1000000.0;
 
-            APRSQuadratic { a, b, c, x: x as u32 }
+            APRSQuadratic {
+                a,
+                b,
+                c,
+                x: x as u32,
+            }
         }
         // in the case when the original value is larger than 255 (or less than -255)
         else {
@@ -312,7 +343,10 @@ impl APRSQuadratic {
                 let b_remainder = a_remainder - b * x;
                 let c = b_remainder;
 
-                debug!("orig_value: {}, x: {}, a: {}, b: {}, c: {}, a_remainder: {}, b_remainder: {}", orig_value, x, a, b, c, a_remainder, b_remainder);
+                debug!(
+                    "orig_value: {}, x: {}, a: {}, b: {}, c: {}, a_remainder: {}, b_remainder: {}",
+                    orig_value, x, a, b, c, a_remainder, b_remainder
+                );
                 (a, b, c)
             } else {
                 let a = (orig_value / (x * x)).ceil();
@@ -321,7 +355,10 @@ impl APRSQuadratic {
                 let b_remainder = a_remainder - b * x;
                 let c = b_remainder;
 
-                debug!("orig_value: {}, x: {}, a: {}, b: {}, c: {}, a_remainder: {}, b_remainder: {}", orig_value, x, a, b, c, a_remainder, b_remainder);
+                debug!(
+                    "orig_value: {}, x: {}, a: {}, b: {}, c: {}, a_remainder: {}, b_remainder: {}",
+                    orig_value, x, a, b, c, a_remainder, b_remainder
+                );
                 (a, b, c)
             };
 
@@ -350,24 +387,23 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-
     /// Creates a series of APRS telemetry information strings that can then be wrapped in
     /// an APRS packet. These don't use any of the digital bits fields.
     pub fn to_aprs(&self, callsign: &String) -> Result<Vec<String>, RtpigateError> {
-
         if self.telemetry.is_empty() {
-            return Err(RtpigateError::Validation("No telemetry analog items defined".into()));
+            return Err(RtpigateError::Validation(
+                "No telemetry analog items defined".into(),
+            ));
         }
 
         let mut telem_string = format!("T#{}", self.sequence);
-        let mut eqn_string =   format!(":{: <9}:EQNS", callsign);
-        let mut parm_string =  format!(":{: <9}:PARM", callsign);
-        let mut unit_string =  format!(":{: <9}:UNIT", callsign);
-        let bits_string =  format!(":{: <9}:BITS.00000000,{}", callsign, self.name);
+        let mut eqn_string = format!(":{: <9}:EQNS", callsign);
+        let mut parm_string = format!(":{: <9}:PARM", callsign);
+        let mut unit_string = format!(":{: <9}:UNIT", callsign);
+        let bits_string = format!(":{: <9}:BITS.00000000,{}", callsign, self.name);
 
         let mut i: u32 = 1;
         for analog_item in &self.telemetry {
-
             // aprs spec allows for up to 5 analog items
             if i > 5 {
                 break;
@@ -375,23 +411,35 @@ impl Telemetry {
 
             telem_string = format!("{},{:03}", telem_string, analog_item.equation.x);
 
-            eqn_string = format!("{}{}{},{},{}",
+            eqn_string = format!(
+                "{}{}{},{},{}",
                 eqn_string,
-                match i { 1 => ".", _ => "," },
+                match i {
+                    1 => ".",
+                    _ => ",",
+                },
                 analog_item.equation.a,
                 analog_item.equation.b,
                 analog_item.equation.c
             );
 
-            parm_string = format!("{}{}{}",
+            parm_string = format!(
+                "{}{}{}",
                 parm_string,
-                match i { 1 => ".", _ => "," },
+                match i {
+                    1 => ".",
+                    _ => ",",
+                },
                 analog_item.label
             );
 
-            unit_string = format!("{}{}{}",
+            unit_string = format!(
+                "{}{}{}",
                 unit_string,
-                match i { 1 => ".", _ => "," },
+                match i {
+                    1 => ".",
+                    _ => ",",
+                },
                 analog_item.units
             );
 
@@ -407,6 +455,12 @@ impl Telemetry {
         // add a zero'd digital value and the report comment
         telem_string = format!("{},00000000,{}", telem_string, self.name);
 
-        Ok(vec![telem_string, eqn_string, parm_string, unit_string, bits_string])
+        Ok(vec![
+            telem_string,
+            eqn_string,
+            parm_string,
+            unit_string,
+            bits_string,
+        ])
     }
 }

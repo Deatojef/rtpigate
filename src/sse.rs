@@ -1,16 +1,15 @@
-use tokio::sync::broadcast::{self};
-use std::sync::{Arc, RwLock};
-use tokio_util::sync::CancellationToken;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast::{self};
+use tokio_util::sync::CancellationToken;
 
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 
-use crate::config::{Config, AppTelemetry, DataItem};
+use crate::config::{AppTelemetry, Config, DataItem};
 use crate::error::RtpigateError;
 use crate::history::HistoryStore;
 use crate::stream::Packet;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SSEEvent {
@@ -18,8 +17,13 @@ pub struct SSEEvent {
     pub data: serde_json::Value,
 }
 
-pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: broadcast::Sender<SSEEvent>, token: CancellationToken, _config: Arc<Config>, history: Arc<RwLock<HistoryStore>>) -> Result<(), RtpigateError> {
-
+pub async fn sse_task(
+    data_channel: broadcast::Sender<DataItem>,
+    sse_channel: broadcast::Sender<SSEEvent>,
+    token: CancellationToken,
+    _config: Arc<Config>,
+    history: Arc<RwLock<HistoryStore>>,
+) -> Result<(), RtpigateError> {
     info!("Started");
 
     // subscribe to the channels
@@ -27,7 +31,6 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
 
     // loop until an error, thread was cancelled, or new configuration info was received.
     loop {
-
         tokio::select! {
 
             // was this thread canceled?
@@ -41,7 +44,7 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                     Ok(DataItem::Pkt(Packet::RTP(p))) => {
                         let key = String::from("rfpacket");
                         let thejson = json!(p);
-                        if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                        if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                             debug!("No SSE subscribers connected");
                         }
                     },
@@ -56,7 +59,7 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                                 }
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                                     debug!("No SSE subscribers connected");
                                 }
                             },
@@ -68,28 +71,28 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
                                 }
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                                     debug!("No SSE subscribers connected");
                                 }
                             },
                             AppTelemetry::SlicerStatus(telem) => {
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                                     debug!("No SSE subscribers connected");
                                 }
                             },
                             AppTelemetry::StationStatus(telem) => {
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                                     debug!("No SSE subscribers connected");
                                 }
                             },
                             AppTelemetry::GpsStatus(telem) => {
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
-                                if let Err(_) = sse_channel.send(SSEEvent { event: key, data: thejson }) {
+                                if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
                                     debug!("No SSE subscribers connected");
                                 }
                             },
@@ -106,7 +109,6 @@ pub async fn sse_task(data_channel: broadcast::Sender<DataItem>, sse_channel: br
             } // message = data_stream.recv() => {
         }
     }
-
 
     info!("Task ended.");
     Ok(())

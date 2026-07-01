@@ -47,7 +47,9 @@ pub struct HistoryStore {
 
 impl HistoryStore {
     pub fn new() -> Self {
-        Self { buckets: BTreeMap::new() }
+        Self {
+            buckets: BTreeMap::new(),
+        }
     }
 
     /// Floor an epoch second to the bucket boundary.
@@ -65,7 +67,10 @@ impl HistoryStore {
     {
         for DataPoint { timestamp, value } in &series.data {
             let key = Self::bucket_key(timestamp.timestamp());
-            let bucket = self.buckets.entry(key).or_insert_with(|| StatBucket { ts: key, ..Default::default() });
+            let bucket = self.buckets.entry(key).or_insert_with(|| StatBucket {
+                ts: key,
+                ..Default::default()
+            });
             set(bucket, *value);
         }
     }

@@ -76,7 +76,6 @@ fn make_config(callsign: &str, passcode: &str) -> Config {
     }
 }
 
-
 // ========================================
 // Passcode tests
 // ========================================
@@ -126,16 +125,21 @@ fn test_passcode_with_ssid() {
     // Passcode should be same with or without SSID
     let config_base = make_config("N0CALL", "13023");
     let config_ssid = make_config("N0CALL-9", "13023");
-    assert_eq!(config_base.compute_passcode(), config_ssid.compute_passcode());
+    assert_eq!(
+        config_base.compute_passcode(),
+        config_ssid.compute_passcode()
+    );
 }
 
 #[test]
 fn test_passcode_case_insensitive() {
     let config_upper = make_config("N0CALL", "13023");
     let config_lower = make_config("n0call", "13023");
-    assert_eq!(config_upper.compute_passcode(), config_lower.compute_passcode());
+    assert_eq!(
+        config_upper.compute_passcode(),
+        config_lower.compute_passcode()
+    );
 }
-
 
 // ========================================
 // Login string tests
@@ -164,7 +168,6 @@ fn test_login_string_no_passcode_sends_negative_one() {
     let login = config.aprsis_login_string();
     assert!(login.contains("pass -1"));
 }
-
 
 // ========================================
 // Config validation tests
@@ -221,7 +224,11 @@ fn test_beaconing_without_location_fails() {
     let mut config = make_config("N0CALL", "13023");
     config.location.lat = None;
     let errors = config.validate();
-    assert!(errors.iter().any(|e| e.contains("lat") && e.contains("beaconing")));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("lat") && e.contains("beaconing"))
+    );
 }
 
 #[test]
@@ -243,7 +250,6 @@ fn test_non_multicast_stream_group_fails() {
     let errors = config.validate();
     assert!(errors.iter().any(|e| e.contains("stream")));
 }
-
 
 // ========================================
 // droppacket tests
@@ -307,7 +313,7 @@ fn test_third_party_without_internet_markers_not_dropped() {
 fn test_satellite_direct_non_sat_callsign_dropped() {
     let mut p = make_packet();
     p.frequency = 145.825;
-    p.is_satellite = true;        // rtp_listener flags sat-frequency packets
+    p.is_satellite = true; // rtp_listener flags sat-frequency packets
     p.heard_direct = true;
     p.source = String::from("N0CALL");
     assert_eq!(droppacket(&p), Some(DropReason::SatelliteDirect));
@@ -317,7 +323,7 @@ fn test_satellite_direct_non_sat_callsign_dropped() {
 fn test_satellite_direct_known_sat_not_dropped() {
     let mut p = make_packet();
     p.frequency = 145.825;
-    p.is_satellite = true;        // rtp_listener flags sat-frequency packets
+    p.is_satellite = true; // rtp_listener flags sat-frequency packets
     p.heard_direct = true;
     p.source = String::from("RS0ISS");
     assert!(droppacket(&p).is_none());
@@ -328,7 +334,7 @@ fn test_satellite_direct_known_sat_lowercase_not_dropped() {
     // M3: callsign matching must be case-insensitive
     let mut p = make_packet();
     p.frequency = 145.825;
-    p.is_satellite = true;        // rtp_listener flags sat-frequency packets
+    p.is_satellite = true; // rtp_listener flags sat-frequency packets
     p.heard_direct = true;
     p.source = String::from("rs0iss");
     assert!(droppacket(&p).is_none());
@@ -338,7 +344,7 @@ fn test_satellite_direct_known_sat_lowercase_not_dropped() {
 fn test_satellite_digipeated_not_dropped() {
     let mut p = make_packet();
     p.frequency = 145.825;
-    p.is_satellite = true;        // rtp_listener flags sat-frequency packets
+    p.is_satellite = true; // rtp_listener flags sat-frequency packets
     p.heard_direct = false;
     p.was_digipeated = true;
     p.source = String::from("N0CALL");
@@ -354,11 +360,14 @@ fn test_satellite_wide_fillin_digipeated_not_dropped() {
     // not the convention-laden `heard_direct`.
     let mut p = make_packet();
     p.frequency = 145.825;
-    p.is_satellite = true;        // rtp_listener flags sat-frequency packets
-    p.heard_direct = true;        // artifact of EXCLUDED_ADDRS scrub
-    p.was_digipeated = true;      // strict: a `*` is genuinely present in path
-    p.source = String::from("N0CALL");  // not a known satellite
-    assert!(droppacket(&p).is_none(), "WIDE-fill-in-digipeated sat packet must be gated");
+    p.is_satellite = true; // rtp_listener flags sat-frequency packets
+    p.heard_direct = true; // artifact of EXCLUDED_ADDRS scrub
+    p.was_digipeated = true; // strict: a `*` is genuinely present in path
+    p.source = String::from("N0CALL"); // not a known satellite
+    assert!(
+        droppacket(&p).is_none(),
+        "WIDE-fill-in-digipeated sat packet must be gated"
+    );
 }
 
 #[test]
@@ -378,15 +387,26 @@ fn test_fresh_packet_not_dropped() {
     assert!(droppacket(&p).is_none());
 }
 
-
 // ========================================
 // positpacket tests
 // ========================================
 
 #[test]
 fn test_positpacket_valid() {
-    let location = Location { lat: Some(39.7392), lon: Some(-104.9903), alt: Some(5280.0), source: PositionSource::Config };
-    let result = positpacket(&location, "N0CALL", "Test", &Some("\\&".to_string()), &Some("R".to_string()), DaoMode::Human);
+    let location = Location {
+        lat: Some(39.7392),
+        lon: Some(-104.9903),
+        alt: Some(5280.0),
+        source: PositionSource::Config,
+    };
+    let result = positpacket(
+        &location,
+        "N0CALL",
+        "Test",
+        &Some("\\&".to_string()),
+        &Some("R".to_string()),
+        DaoMode::Human,
+    );
     assert!(result.is_ok());
     let pkt = result.unwrap();
     assert!(pkt.starts_with("N0CALL>APZJD1,TCPIP*:/"));
@@ -396,28 +416,48 @@ fn test_positpacket_valid() {
 
 #[test]
 fn test_positpacket_missing_lat() {
-    let location = Location { lat: None, lon: Some(-104.0), alt: Some(5000.0), source: PositionSource::Config };
+    let location = Location {
+        lat: None,
+        lon: Some(-104.0),
+        alt: Some(5000.0),
+        source: PositionSource::Config,
+    };
     let result = positpacket(&location, "N0CALL", "Test", &None, &None, DaoMode::Human);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_positpacket_zero_alt() {
-    let location = Location { lat: Some(39.0), lon: Some(-104.0), alt: Some(0.0), source: PositionSource::Config };
+    let location = Location {
+        lat: Some(39.0),
+        lon: Some(-104.0),
+        alt: Some(0.0),
+        source: PositionSource::Config,
+    };
     let result = positpacket(&location, "N0CALL", "Test", &None, &None, DaoMode::Human);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_positpacket_default_symbol() {
-    let location = Location { lat: Some(39.0), lon: Some(-104.0), alt: Some(5000.0), source: PositionSource::Config };
+    let location = Location {
+        lat: Some(39.0),
+        lon: Some(-104.0),
+        alt: Some(5000.0),
+        source: PositionSource::Config,
+    };
     let result = positpacket(&location, "N0CALL", "Test", &None, &None, DaoMode::Human);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_positpacket_southern_hemisphere() {
-    let location = Location { lat: Some(-33.8688), lon: Some(151.2093), alt: Some(100.0), source: PositionSource::Config };
+    let location = Location {
+        lat: Some(-33.8688),
+        lon: Some(151.2093),
+        alt: Some(100.0),
+        source: PositionSource::Config,
+    };
     let result = positpacket(&location, "VK2ABC", "Sydney", &None, &None, DaoMode::Human);
     assert!(result.is_ok());
     let pkt = result.unwrap();
@@ -425,17 +465,22 @@ fn test_positpacket_southern_hemisphere() {
     assert!(pkt.contains("E"));
 }
 
-
 // ========================================
 // Telemetry encoding tests
 // ========================================
 
 #[test]
 fn test_telemetry_to_aprs_basic() {
-    let items = vec![
-        AnalogItem { label: "Rx".into(), units: "Pkts".into(), equation: APRSQuadratic::new(10.0) },
-    ];
-    let telem = Telemetry { telemetry: items, name: "Test".into(), sequence: 1 };
+    let items = vec![AnalogItem {
+        label: "Rx".into(),
+        units: "Pkts".into(),
+        equation: APRSQuadratic::new(10.0),
+    }];
+    let telem = Telemetry {
+        telemetry: items,
+        name: "Test".into(),
+        sequence: 1,
+    };
     let result = telem.to_aprs(&"N0CALL".to_string());
     assert!(result.is_ok());
     let packets = result.unwrap();
@@ -449,17 +494,29 @@ fn test_telemetry_to_aprs_basic() {
 
 #[test]
 fn test_telemetry_empty_items_error() {
-    let telem = Telemetry { telemetry: vec![], name: "Test".into(), sequence: 1 };
+    let telem = Telemetry {
+        telemetry: vec![],
+        name: "Test".into(),
+        sequence: 1,
+    };
     let result = telem.to_aprs(&"N0CALL".to_string());
     assert!(result.is_err());
 }
 
 #[test]
 fn test_telemetry_five_items_no_padding() {
-    let items: Vec<AnalogItem> = (0..5).map(|i| {
-        AnalogItem { label: format!("A{}", i), units: "U".into(), equation: APRSQuadratic::new(i as f64) }
-    }).collect();
-    let telem = Telemetry { telemetry: items, name: "Test".into(), sequence: 42 };
+    let items: Vec<AnalogItem> = (0..5)
+        .map(|i| AnalogItem {
+            label: format!("A{}", i),
+            units: "U".into(),
+            equation: APRSQuadratic::new(i as f64),
+        })
+        .collect();
+    let telem = Telemetry {
+        telemetry: items,
+        name: "Test".into(),
+        sequence: 42,
+    };
     let result = telem.to_aprs(&"N0CALL".to_string());
     assert!(result.is_ok());
     let packets = result.unwrap();
@@ -469,10 +526,18 @@ fn test_telemetry_five_items_no_padding() {
 
 #[test]
 fn test_telemetry_max_six_items_truncates_to_five() {
-    let items: Vec<AnalogItem> = (0..6).map(|i| {
-        AnalogItem { label: format!("A{}", i), units: "U".into(), equation: APRSQuadratic::new(i as f64) }
-    }).collect();
-    let telem = Telemetry { telemetry: items, name: "Test".into(), sequence: 1 };
+    let items: Vec<AnalogItem> = (0..6)
+        .map(|i| AnalogItem {
+            label: format!("A{}", i),
+            units: "U".into(),
+            equation: APRSQuadratic::new(i as f64),
+        })
+        .collect();
+    let telem = Telemetry {
+        telemetry: items,
+        name: "Test".into(),
+        sequence: 1,
+    };
     let result = telem.to_aprs(&"N0CALL".to_string());
     assert!(result.is_ok());
     // The T# line should have exactly 5 analog values + digital + name
@@ -481,7 +546,6 @@ fn test_telemetry_max_six_items_truncates_to_five() {
     // T#seq,v1,v2,v3,v4,v5,00000000,name = 7 commas
     assert_eq!(comma_count, 7);
 }
-
 
 // ========================================
 // APRSQuadratic tests
@@ -513,7 +577,6 @@ fn test_quadratic_fractional() {
     assert!((q.c - 0.5).abs() < 0.001);
 }
 
-
 // ========================================
 // RTPPacket::for_rxigate tests
 // ========================================
@@ -537,7 +600,6 @@ fn test_for_rxigate_empty_path_no_double_comma() {
     assert!(result.starts_with("N0CALL>APRS,qAO,MYCALL:"));
 }
 
-
 // ========================================
 // positpacket / DAO precision tests
 // ========================================
@@ -546,8 +608,21 @@ fn test_for_rxigate_empty_path_no_double_comma() {
 fn test_positpacket_includes_human_readable_dao() {
     // Live rpi5 coordinates: 39.348740067, -104.797664617
     // base ddmm.hh = 3920.92N / 10447.85W, with thousandths digits 4 and 9 -> !W49!
-    let loc = Location { lat: Some(39.348740067), lon: Some(-104.797664617), alt: Some(6655.0), source: PositionSource::Config };
-    let p = positpacket(&loc, "N0CALL", "", &Some("\\&".to_string()), &Some("R".to_string()), DaoMode::Human).unwrap();
+    let loc = Location {
+        lat: Some(39.348740067),
+        lon: Some(-104.797664617),
+        alt: Some(6655.0),
+        source: PositionSource::Config,
+    };
+    let p = positpacket(
+        &loc,
+        "N0CALL",
+        "",
+        &Some("\\&".to_string()),
+        &Some("R".to_string()),
+        DaoMode::Human,
+    )
+    .unwrap();
     assert!(p.contains("3920.92N"), "base latitude wrong: {}", p);
     assert!(p.contains("10447.85W"), "base longitude wrong: {}", p);
     assert!(p.contains("!W49!"), "DAO token missing/wrong: {}", p);
@@ -556,8 +631,21 @@ fn test_positpacket_includes_human_readable_dao() {
 #[test]
 fn test_positpacket_dao_zero_with_no_extra_precision() {
     // Exactly representable: 39.5 -> 30.000', -104.25 -> 15.000' -> !W00!
-    let loc = Location { lat: Some(39.5), lon: Some(-104.25), alt: Some(5280.0), source: PositionSource::Config };
-    let p = positpacket(&loc, "N0CALL", "", &Some("\\&".to_string()), &Some("R".to_string()), DaoMode::Human).unwrap();
+    let loc = Location {
+        lat: Some(39.5),
+        lon: Some(-104.25),
+        alt: Some(5280.0),
+        source: PositionSource::Config,
+    };
+    let p = positpacket(
+        &loc,
+        "N0CALL",
+        "",
+        &Some("\\&".to_string()),
+        &Some("R".to_string()),
+        DaoMode::Human,
+    )
+    .unwrap();
     assert!(p.contains("3930.00N"), "{}", p);
     assert!(p.contains("10415.00W"), "{}", p);
     assert!(p.contains("!W00!"), "{}", p);
@@ -567,17 +655,51 @@ fn test_positpacket_dao_zero_with_no_extra_precision() {
 fn test_positpacket_base91_dao() {
     // Same live coordinates, base-91 form. lat remainder 0.004404' -> 'I' (val 40),
     // lon remainder 0.009877' -> 'z' (val 89), lowercase 'w' datum -> !wIz!
-    let loc = Location { lat: Some(39.348740067), lon: Some(-104.797664617), alt: Some(6655.0), source: PositionSource::Config };
-    let p = positpacket(&loc, "N0CALL", "", &Some("\\&".to_string()), &Some("R".to_string()), DaoMode::Base91).unwrap();
+    let loc = Location {
+        lat: Some(39.348740067),
+        lon: Some(-104.797664617),
+        alt: Some(6655.0),
+        source: PositionSource::Config,
+    };
+    let p = positpacket(
+        &loc,
+        "N0CALL",
+        "",
+        &Some("\\&".to_string()),
+        &Some("R".to_string()),
+        DaoMode::Base91,
+    )
+    .unwrap();
     assert!(p.contains("3920.92N"), "base latitude wrong: {}", p);
     assert!(p.contains("10447.85W"), "base longitude wrong: {}", p);
-    assert!(p.contains("!wIz!"), "base-91 DAO token missing/wrong: {}", p);
+    assert!(
+        p.contains("!wIz!"),
+        "base-91 DAO token missing/wrong: {}",
+        p
+    );
 }
 
 #[test]
 fn test_positpacket_dao_off_emits_no_token() {
-    let loc = Location { lat: Some(39.348740067), lon: Some(-104.797664617), alt: Some(6655.0), source: PositionSource::Config };
-    let p = positpacket(&loc, "N0CALL", "", &Some("\\&".to_string()), &Some("R".to_string()), DaoMode::Off).unwrap();
+    let loc = Location {
+        lat: Some(39.348740067),
+        lon: Some(-104.797664617),
+        alt: Some(6655.0),
+        source: PositionSource::Config,
+    };
+    let p = positpacket(
+        &loc,
+        "N0CALL",
+        "",
+        &Some("\\&".to_string()),
+        &Some("R".to_string()),
+        DaoMode::Off,
+    )
+    .unwrap();
     assert!(p.contains("3920.92N"), "{}", p);
-    assert!(!p.contains("!W") && !p.contains("!w"), "unexpected DAO token: {}", p);
+    assert!(
+        !p.contains("!W") && !p.contains("!w"),
+        "unexpected DAO token: {}",
+        p
+    );
 }

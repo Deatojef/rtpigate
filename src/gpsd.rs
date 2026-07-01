@@ -1,18 +1,18 @@
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
+use chrono::{DateTime, Local, Utc};
+use log::{debug, info, warn};
+use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 use tokio_util::sync::CancellationToken;
-use chrono::{DateTime, Local, Utc};
-use socket2::{SockRef, TcpKeepalive};
-use log::{info, warn, debug};
 
-use gpsd_proto::{UnifiedResponse, Mode, ENABLE_WATCH_CMD};
+use gpsd_proto::{ENABLE_WATCH_CMD, Mode, UnifiedResponse};
 
-use crate::config::{Config, DataItem, AppTelemetry, GpsFix, GpsTelemetry};
+use crate::config::{AppTelemetry, Config, DataItem, GpsFix, GpsTelemetry};
 use crate::error::RtpigateError;
 
 // Connection-level timeouts, mirroring the APRS-IS task.
@@ -34,7 +34,6 @@ pub async fn gpsd_task(
     config: Arc<Config>,
     gps_state: Arc<RwLock<Option<GpsFix>>>,
 ) -> Result<(), RtpigateError> {
-
     info!("Started");
 
     let gpsd = config.gpsd_config();
@@ -80,50 +79,63 @@ pub async fn gpsd_task(
         let mut addrs = match tokio::net::lookup_host(&address).await {
             Ok(a) => a,
             Err(e) => {
-                warn!("GPSD: unable to resolve {}: {}. Retrying in {}s...", address, e, backoff_secs);
+                warn!(
+                    "GPSD: unable to resolve {}: {}. Retrying in {}s...",
+                    address, e, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         let sock_addr = match addrs.next() {
             Some(a) => a,
             None => {
-                warn!("GPSD: no socket address for {}. Retrying in {}s...", address, backoff_secs);
+                warn!(
+                    "GPSD: no socket address for {}. Retrying in {}s...",
+                    address, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         // connect (bounded timeout)
-        let socket: TcpStream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(sock_addr)).await {
+        let socket: TcpStream = match timeout(CONNECT_TIMEOUT, TcpStream::connect(sock_addr)).await
+        {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
-                warn!("GPSD: failed to connect to {}: {}. Retrying in {}s...", address, e, backoff_secs);
+                warn!(
+                    "GPSD: failed to connect to {}: {}. Retrying in {}s...",
+                    address, e, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
             Err(_elapsed) => {
-                warn!("GPSD: connect to {} timed out. Retrying in {}s...", address, backoff_secs);
+                warn!(
+                    "GPSD: connect to {} timed out. Retrying in {}s...",
+                    address, backoff_secs
+                );
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
                 }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                 continue;
-            },
+            }
         };
 
         // detect silently-dropped connections at the OS level
@@ -142,16 +154,21 @@ pub async fn gpsd_task(
         let (read_half, mut write_half) = socket.into_split();
 
         // enable JSON streaming
-        match timeout(WRITE_TIMEOUT, write_half.write_all(ENABLE_WATCH_CMD.as_bytes())).await {
-            Ok(Ok(())) => {},
+        match timeout(
+            WRITE_TIMEOUT,
+            write_half.write_all(ENABLE_WATCH_CMD.as_bytes()),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 warn!("GPSD: failed to send WATCH: {}. Reconnecting...", e);
                 continue;
-            },
+            }
             Err(_elapsed) => {
                 warn!("GPSD: WATCH write timed out. Reconnecting...");
                 continue;
-            },
+            }
         }
 
         let mut lines = BufReader::new(read_half).lines();
@@ -276,7 +293,6 @@ pub async fn gpsd_task(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +310,7 @@ mod tests {
                 // altMSL in meters -> feet conversion used by the task
                 let alt_ft = tpv.alt_msl.unwrap() as f64 * METERS_TO_FEET;
                 assert!((alt_ft - 381.0 * METERS_TO_FEET).abs() < 0.01);
-            },
+            }
             _ => panic!("expected TPV"),
         }
     }
@@ -309,15 +325,19 @@ mod tests {
                 let sats = sky.satellites.unwrap();
                 assert_eq!(sats.len(), 3);
                 assert_eq!(sats.iter().filter(|s| s.used).count(), 2);
-            },
+            }
             _ => panic!("expected SKY"),
         }
     }
 
     #[test]
     fn ignores_non_position_classes() {
-        let line = r#"{"class":"VERSION","release":"3.22","rev":"3.22","proto_major":3,"proto_minor":14}"#;
+        let line =
+            r#"{"class":"VERSION","release":"3.22","rev":"3.22","proto_major":3,"proto_minor":14}"#;
         let resp = serde_json::from_str::<UnifiedResponse>(line).expect("parse VERSION");
-        assert!(!matches!(resp, UnifiedResponse::Tpv(_) | UnifiedResponse::Sky(_)));
+        assert!(!matches!(
+            resp,
+            UnifiedResponse::Tpv(_) | UnifiedResponse::Sky(_)
+        ));
     }
 }
