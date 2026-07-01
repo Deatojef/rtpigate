@@ -6,7 +6,7 @@ use log::debug;
 
 use crate::config::{Location, DaoMode};
 use crate::error::RtpigateError;
-use crate::ka9q::RTPPacket;
+use crate::stream::RTPPacket;
 
 /// TOCALL value for this software. 'APZ' denotes experimental. 'JD1' denotes the version.
 pub static TOCALL: &str = "APZJD1";
@@ -100,7 +100,7 @@ pub fn droppacket(p: &RTPPacket) -> Option<DropReason> {
     // intentionally ignores WIDE-class digipeaters, which would let a fill-in-relayed
     // packet incorrectly fall into the "direct" branch.
     // The set of satellite frequencies is sourced from config and flagged on the
-    // packet itself (see ka9q::rtp_listener).
+    // packet itself (see stream::rtp_listener).
     const KNOWN_SATS: &[&str] = &["RS0ISS", "NA1SS", "DP0ISS", "OR4ISS", "IR0ISS", "DP0SNX"];
     if !p.was_digipeated
         && p.is_satellite

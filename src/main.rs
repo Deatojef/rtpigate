@@ -23,8 +23,8 @@ mod error;
 mod config;
 use config::{Config, DataItem, PublicConfig, APRSISPasscode, GpsFix, PositionSource};
 
-mod ka9q;
-use ka9q::{rtp_listener, RTPPacket};
+mod stream;
+use stream::{rtp_listener, RTPPacket};
 
 mod aprs_is;
 use aprs_is::aprsis_task;

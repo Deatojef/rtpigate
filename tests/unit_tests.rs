@@ -4,7 +4,7 @@ use std::time::Instant;
 // We need to reference the crate's public items
 use rtpigate::config::*;
 use rtpigate::igate::*;
-use rtpigate::ka9q::RTPPacket;
+use rtpigate::stream::RTPPacket;
 
 // ---- Helper: create a fresh RTPPacket for testing ----
 
@@ -64,13 +64,14 @@ fn make_config(callsign: &str, passcode: &str) -> Config {
             threshold: Some(600),
             dao: None,
         },
-        rtp: RtpConfig {
-            host: "ax25.local".to_string(),
-            port: 5004,
+        stream: StreamConfig {
+            group: "239.12.34.56".parse().unwrap(),
+            port: 17014,
+            interface: None,
+            recv_buffer_bytes: None,
         },
         satellite: None,
         http: None,
-        decoder: None,
         gpsd: None,
     }
 }
@@ -235,11 +236,12 @@ fn test_aprsis_disabled_skips_host_check() {
 }
 
 #[test]
-fn test_empty_rtp_host_fails() {
+fn test_non_multicast_stream_group_fails() {
     let mut config = make_config("N0CALL", "13023");
-    config.rtp.host = String::new();
+    // A unicast address is invalid for [stream] group — we join it via IGMP.
+    config.stream.group = "192.168.1.10".parse().unwrap();
     let errors = config.validate();
-    assert!(errors.iter().any(|e| e.contains("rtp")));
+    assert!(errors.iter().any(|e| e.contains("stream")));
 }
 
 

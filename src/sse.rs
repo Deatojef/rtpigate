@@ -9,7 +9,7 @@ use log::{info, warn, debug};
 use crate::config::{Config, AppTelemetry, DataItem};
 use crate::error::RtpigateError;
 use crate::history::HistoryStore;
-use crate::ka9q::Packet;
+use crate::stream::Packet;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

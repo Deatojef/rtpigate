@@ -642,8 +642,8 @@
                 items.push(["DAO Precision", daoLabel[cfg.aprsis.dao] || cfg.aprsis.dao]);
             }
         }
-        if (cfg.rtp) {
-            items.push(["RTP Multicast", cfg.rtp.host + ":" + cfg.rtp.port]);
+        if (cfg.stream) {
+            items.push(["APRS Stream", cfg.stream.group + ":" + cfg.stream.port]);
         }
 
         for (var i = 0; i < items.length; i++) {

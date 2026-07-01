@@ -1,47 +1,24 @@
 use tokio::{sync::broadcast, time::{interval, sleep, Duration}};
 use tokio_util::sync::CancellationToken;
-use std::{collections::{HashMap, VecDeque}, sync::Arc, fmt, time::Instant};
+use std::{collections::{HashMap, VecDeque}, net::Ipv4Addr, sync::Arc, fmt, time::Instant};
 use serde::Serialize;
 use chrono::{DateTime, Local, Utc};
 
 use log::{info, warn, error, debug};
 
-use aprs_rtp::{AprsListener, config::SourceConfig};
+use aprs_stream::{AprsFrame, Subscriber};
+use aprs_stream::subscribe::{RecvError, SubscribeConfig};
 use aprs_decode::packet::{AprsPacket as DecodedPacket, AprsData};
 
 use crate::config::{Config, AppTelemetry, PacketTelemetry, SlicerTelemetry, SlicerInterval, DataSeries, DataPoint, DataItem, StationEntry, StationTelemetry, FrequencyCount};
 use crate::error::RtpigateError;
 
-// Per-slicer space-gain ladder, replicating aprs-rtp's `afsk::slicer::space_gains`
-// (which is `pub(crate)`, so not importable). Each slicer applies
-// `demod_out = mark - space * gain`, so `gain < 1` favors loud-space
-// (pre-emphasized) signals and `gain > 1` favors loud-mark (de-emphasized).
-// As of aprs-rtp 0.2.0 the ladder is parameterized in **twist dB**: `n` rungs
-// spread evenly across `[min_db, max_db]` (uniform in dB == geometric in linear
-// gain), each rung's linear gain being `twist_db_to_gain(db) = 10^(db/20)`. A
-// single slicer uses unity gain (0 dB). Kept in sync with the DecoderConfig we
-// pass to the listener so the frontend labels stay truthful.
-fn twist_db_to_gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
-
-fn space_gains(n: usize, min_db: f32, max_db: f32) -> Vec<f32> {
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        return vec![1.0];
-    }
-    let step_db = (max_db - min_db) / (n - 1) as f32;
-    (0..n)
-        .map(|i| twist_db_to_gain(min_db + i as f32 * step_db))
-        .collect()
-}
-
 // Classify a slicer's space-gain into a twist zone, mirroring the frontend's
 // slicerZone(): gain < 0.8 compensates a loud space (pre-emphasis), gain > 1.25
 // compensates a loud mark (de-emphasis); in between is treated as flat.
-// 0 = pre-emph, 1 = flat, 2 = de-emph.
+// 0 = pre-emph, 1 = flat, 2 = de-emph. The gain ladder itself now arrives on the
+// wire (RfMeta::slicer_gains) instead of being derived from a local decoder
+// config — the producer (aprs-streamd) owns the demodulator.
 fn slicer_zone(g: f32) -> u8 {
     if g < 0.8 { 0 } else if g < 1.25 { 1 } else { 2 }
 }
@@ -64,7 +41,7 @@ pub struct TwistInfo {
     pub centroid_db: f32,
 }
 
-// the packet structure (created by the RTP thread for incoming RTP packets)
+// the packet structure (created by the stream listener for incoming frames)
 #[derive(Debug, Clone, Serialize)]
 pub struct RTPPacket {
 
@@ -87,6 +64,9 @@ pub struct RTPPacket {
     // it verbatim instead of substituting U+FFFD replacement characters for bytes
     // like a stuck transmitter's trailing 0xff. APRS-IS is an 8-bit, line-delimited
     // byte stream, so this is the faithful representation to gate. Not serialised.
+    //
+    // Sourced from the stream frame by slicing the raw AX.25 at the producer's
+    // `ax25_meta.info_offset`, so no AX.25 re-parsing happens consumer-side.
     #[serde(skip)]
     pub info_bytes: Vec<u8>,
 
@@ -122,7 +102,7 @@ pub struct RTPPacket {
     // is this packet not to be igated and sent to the APRS-IS cloud?
     pub rfonly: bool,
 
-    // the frequency from the RTP packet usually from ssrc()
+    // the frequency in MHz (from the frame's RF metadata / SSRC)
     pub frequency: f64,
 
     // was this packet heard from or perhaps, destined to a satellite?
@@ -133,11 +113,12 @@ pub struct RTPPacket {
     // within the gating window are still counted as "would-igate" here.
     pub igated: bool,
 
-    // Count of info-field bytes the aprs-rtp decoder flagged as almost certainly
-    // not real APRS payload: C0 control bytes (other than tab/CR/LF) plus any
-    // invalid-UTF-8 bytes (e.g. a stuck transmitter's trailing 0xff). 0 for a
-    // clean frame; >0 means the displayed `info` is likely garbled. Advisory
-    // only — the frame is still FCS-valid and the raw bytes are untouched.
+    // Count of info-field bytes the decoder flagged as almost certainly not real
+    // APRS payload: C0 control bytes (other than tab/CR/LF) plus any invalid-UTF-8
+    // bytes (e.g. a stuck transmitter's trailing 0xff). 0 for a clean frame; >0
+    // means the displayed `info` is likely garbled. Advisory only — the frame is
+    // still FCS-valid and the raw bytes are untouched. Carried on the wire in
+    // `ax25_meta.info_invalid_bytes`.
     pub info_invalid_bytes: usize,
 
     // object or item name (if this packet is an object/item report)
@@ -216,10 +197,11 @@ const EXCLUDED_ADDRS: &[&str] = &["WIDE", "TCPIP", "NOGATE", "RFONLY", "SGATE"];
 const RFONLY_ADDRS: &[&str] = &["TCPIP", "TCPXX", "RFONLY", "NOGATE"];
 
 
-// Listens to a ka9q-radio RTP multicast audio group via the `aprs-rtp` crate,
-// which performs RTP dejitter, 1200-baud AFSK demodulation, HDLC framing, CRC
-// validation and AX.25 parsing internally. Decoded packets are mapped into the
-// internal RTPPacket type and broadcast on the shared data channel.
+// Subscribes to the decoded-APRS multicast stream published by `aprs-streamd`
+// (via the shared `aprs-stream` crate) and maps each typed frame into the
+// internal RTPPacket type, broadcasting it on the shared data channel. All RTP
+// audio, AFSK demodulation, HDLC/CRC and AX.25 parsing now happen once, upstream
+// in the producer — this consumer never touches any of that.
 //
 // Normally this never returns — it loops forever, reconnecting on failure.
 pub async fn rtp_listener(
@@ -238,8 +220,8 @@ pub async fn rtp_listener(
     let mut heard_direct = 0;
     let mut digipeated = 0;
     // `decode_errors` is retained for telemetry/frontend compatibility. The
-    // aprs-rtp crate only emits successfully-decoded packets over the channel,
-    // so this counter is never incremented and always reports 0.
+    // producer only publishes successfully-decoded frames, so this counter is
+    // never incremented and always reports 0.
     let mut decode_errors = 0;
     let mut total_packets = 0;
 
@@ -271,27 +253,25 @@ pub async fn rtp_listener(
         data: VecDeque::new(),
     };
 
-    // decoder configuration; `slicers` (default 8) drives the waterfall column
-    // count and is the single source of truth for the slicer bank size. The
-    // slicer count and gain-ladder bounds (min/max twist dB) can be overridden
-    // via the optional [decoder] section in config.toml; everything downstream
-    // (space_gains ladder, twist zones, waterfall) derives from this value.
-    let decoder = config.decoder_config();
-    let slicer_count = decoder.slicers;
-    let slicer_gains = space_gains(slicer_count, decoder.min_twist_db, decoder.max_twist_db);
-    // Twist zone per slicer (constant for the session); cloned onto each packet's
-    // TwistInfo so the frontend can color the twist bar without slicer telemetry.
-    let slicer_zones: Vec<u8> = slicer_gains.iter().map(|g| slicer_zone(*g)).collect();
+    // Slicer-diversity waterfall state. The slicer bank size and its per-slicer
+    // gain ladder are no longer known up front (rtpigate no longer owns the
+    // decoder) — they arrive on the wire in each frame's `RfMeta::slicer_gains`.
+    // These are lazily initialized from the first frame that carries the ladder;
+    // until then they stay empty and the slicer telemetry reports nothing.
+    let mut slicer_count: usize = 0;
+    let mut slicer_gains: Vec<f32> = Vec::new();
+    // Twist zone per slicer (0 = pre-emph, 1 = flat, 2 = de-emph); cloned onto
+    // each packet's TwistInfo so the frontend can color the twist bar.
+    let mut slicer_zones: Vec<u8> = Vec::new();
     // Twist (dB) per slicer = 20*log10(gain); used to compute each packet's
-    // centroid twist for the popup. Geometric gains => a linear dB ladder.
-    let slicer_db: Vec<f32> = slicer_gains.iter().map(|g| 20.0 * g.log10()).collect();
-
-    // per-slicer accumulators for the slicer-diversity waterfall. `slicer_interval`
-    // counts demodulations in the current 15s window; `slicer_history` keeps the
-    // last 10 windows (heatmap rows); `lifetime_slicer_hits` never resets.
-    let mut slicer_interval: Vec<u32> = vec![0; slicer_count];
+    // centroid twist for the popup.
+    let mut slicer_db: Vec<f32> = Vec::new();
+    // per-slicer accumulators. `slicer_interval` counts demodulations in the
+    // current 15s window; `slicer_history` keeps the last 10 windows (heatmap
+    // rows); `lifetime_slicer_hits` never resets.
+    let mut slicer_interval: Vec<u32> = Vec::new();
     let mut slicer_history: VecDeque<SlicerInterval> = VecDeque::new();
-    let mut lifetime_slicer_hits: Vec<u64> = vec![0; slicer_count];
+    let mut lifetime_slicer_hits: Vec<u64> = Vec::new();
 
     // the interval for when to send statistics
     let mut time_interval = interval(Duration::from_secs(15));
@@ -307,27 +287,21 @@ pub async fn rtp_listener(
             break;
         }
 
-        // build the aprs-rtp source/decoder configuration. The [rtp] section
-        // now points at a ka9q-radio channel *audio* multicast group; the
-        // decoder demodulates the PCM stream itself. Tuning knobs use crate
-        // defaults (8 slicers, single-bit CRC fix, 2-packet jitter buffer).
-        let source = SourceConfig {
-            host: config.rtp.host.clone(),
-            port: config.rtp.port as u16,
-            interface: None,
-            jitter_buffer: 2,
-            ssrc: Vec::new(),
-        };
-
-        // start the listener; on failure back off and retry just like the
-        // previous socket-setup path did.
-        let mut rx = match AprsListener::new(source, decoder.clone()).run().await {
-            Ok(rx) => {
+        // Join the multicast group and start receiving decoded frames. The
+        // `[stream]` section points at the group/port `aprs-streamd` publishes to.
+        // On setup failure, back off and retry exactly as the RTP path used to.
+        let sub = match Subscriber::new(SubscribeConfig {
+            group: config.stream.group,
+            port: config.stream.port,
+            interface: config.stream.interface.unwrap_or(Ipv4Addr::UNSPECIFIED),
+            recv_buffer_bytes: config.stream.recv_buffer_bytes,
+        }) {
+            Ok(sub) => {
                 backoff_secs = 5;
-                rx
+                sub
             },
             Err(e) => {
-                error!("APRS RTP listener setup failed: {}. Retrying in {}s...", e, backoff_secs);
+                error!("APRS stream subscribe failed: {}. Retrying in {}s...", e, backoff_secs);
                 tokio::select! {
                     _ = token.cancelled() => break,
                     _ = sleep(Duration::from_secs(backoff_secs)) => {},
@@ -337,9 +311,9 @@ pub async fn rtp_listener(
             },
         };
 
-        info!("Connected to RTP multicast audio: {}:{}", config.rtp.host, config.rtp.port);
+        info!("Subscribed to APRS stream {}:{}", config.stream.group, config.stream.port);
 
-        // inner packet read loop
+        // inner frame read loop
         loop {
 
             tokio::select! {
@@ -465,16 +439,38 @@ pub async fn rtp_listener(
                 },
 
 
-                // read the next decoded packet from the aprs-rtp channel
-                maybe_pkt = rx.recv() => {
-                    match maybe_pkt {
+                // read the next decoded frame from the multicast stream
+                result = sub.recv_frame() => {
+                    match result {
 
-                        // a packet was decoded
-                        Some(rtp_pkt) => {
+                        // a frame arrived
+                        Ok((frame, _from)) => {
 
-                            // map the aprs-rtp packet into our internal RTPPacket,
-                            // running aprs-decode for position/object/item/symbol data.
-                            let MappedPacket { mut packet, symbol_table: sym_table, symbol_code: sym_code } = map_packet(rtp_pkt);
+                            // Learn the slicer bank size and gain ladder from the
+                            // stream on the first frame that carries it. Static for
+                            // the producer session, so this runs once.
+                            if slicer_count == 0 {
+                                if let Some(g) = frame.rf.slicer_gains.as_ref().filter(|g| !g.is_empty()) {
+                                    slicer_count = g.len();
+                                    slicer_gains = g.clone();
+                                    slicer_zones = g.iter().map(|x| slicer_zone(*x)).collect();
+                                    slicer_db = g.iter().map(|x| 20.0 * x.log10()).collect();
+                                    slicer_interval = vec![0; slicer_count];
+                                    lifetime_slicer_hits = vec![0; slicer_count];
+                                }
+                            }
+
+                            // map the stream frame into our internal RTPPacket. A
+                            // frame without ax25_meta (a pre-v2 producer) can't be
+                            // mapped faithfully — skip it rather than guess.
+                            let mapped = match map_frame(&frame) {
+                                Some(m) => m,
+                                None => {
+                                    debug!("frame without ax25_meta; skipping");
+                                    continue;
+                                }
+                            };
+                            let MappedPacket { mut packet, symbol_table: sym_table, symbol_code: sym_code } = mapped;
 
                             // Apply runtime-config-driven flags. is_satellite must be
                             // set before droppacket() so the sat-frequency policy fires.
@@ -600,9 +596,14 @@ pub async fn rtp_listener(
                             }
                         },
 
-                        // the aprs-rtp listener closed its channel - break inner loop to reconnect
-                        None => {
-                            error!("APRS RTP listener channel closed. Will reconnect...");
+                        // a malformed / version-incompatible datagram: skip and keep going.
+                        Err(RecvError::Codec(e)) => {
+                            debug!("Skipping bad datagram: {}", e);
+                        },
+
+                        // a socket-level error: tear down and rebuild the subscriber.
+                        Err(RecvError::Io(e)) => {
+                            error!("APRS stream receive failed: {}. Will reconnect...", e);
                             break;
                         },
                     }
@@ -628,54 +629,89 @@ struct MappedPacket {
     symbol_code: Option<char>,
 }
 
-// Map an aprs-rtp decoded packet into the internal RTPPacket type. The AX.25
-// framing (source/destination/path/heard-direct) is taken directly from the
-// aprs-rtp packet, and the APRS payload is re-parsed with aprs-decode to
-// extract position, altitude, object/item names and the map symbol.
-fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
+// Map a decoded stream frame into the internal RTPPacket type. The AX.25 framing
+// facts (source/destination/path/heard-direct/dti) come straight from the frame's
+// `ax25_meta` block — decoded once upstream by the producer — so nothing is
+// re-parsed here. The APRS payload (position/object/item/symbol) is read from the
+// frame's already-parsed packet, falling back to decoding the TNC2 text only if
+// the producer couldn't type it.
+//
+// Returns None if the frame carries no `ax25_meta` (a pre-v2 producer): without
+// it we can't recover source/dest/heard faithfully, so the caller skips the frame.
+fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
 
-    // wall-clock receive time from the decoder; pair it with a fresh monotonic
-    // Instant for the staleness guard (channel delivery is effectively immediate).
-    let receivetime = DateTime::<Local>::from(pkt.received_at);
+    let meta = frame.ax25_meta.as_ref()?;
+
+    // wall-clock receive time reconstructed from the frame's epoch-millis stamp;
+    // pair it with a fresh monotonic Instant for the staleness guard (channel
+    // delivery is effectively immediate).
+    let receivetime = DateTime::<Utc>::from_timestamp_millis(frame.capture.received_at_ms as i64)
+        .map(|dt| dt.with_timezone(&Local))
+        .unwrap_or_else(Local::now);
     let received_instant = Instant::now();
 
-    // the information field as UTF-8 text (lossy for binary Mic-E/telemetry),
-    // plus the original bytes kept verbatim for byte-faithful igating.
-    let info = String::from_utf8_lossy(&pkt.info).to_string();
-    let info_bytes = pkt.info.clone();
+    // The verbatim 8-bit info field, sliced out of the raw AX.25 using the
+    // producer's offset — no AX.25 re-parsing. `info` is the lossy-UTF-8 render
+    // for display/dedup/SSE; `info_bytes` is the faithful payload for igating.
+    let info_bytes: Vec<u8> = meta.info_offset
+        .and_then(|off| frame.ax25.get(off as usize..))
+        .map(|s| s.to_vec())
+        .unwrap_or_default();
+    let info = String::from_utf8_lossy(&info_bytes).to_string();
+    let info_invalid_bytes = meta.info_invalid_bytes as usize;
 
-    // advisory garble flag from the decoder (suspect/invalid-UTF-8 byte count)
-    let info_invalid_bytes = pkt.info_invalid_bytes;
-
-    // viapath and filtered digipeater path (real callsigns only)
-    let path = pkt.via.join(",");
-    let digipeater_path: Vec<String> = pkt.via.iter()
+    // viapath and filtered digipeater path (real callsigns only). The path is the
+    // via callsigns joined without heard (`*`) markers, matching the form the
+    // igate reformer expects.
+    let path = meta.via.iter().map(|h| h.call.clone()).collect::<Vec<_>>().join(",");
+    let digipeater_path: Vec<String> = meta.via.iter()
+        .map(|h| &h.call)
         .filter(|s| EXCLUDED_ADDRS.iter().all(|x| !s.contains(x)))
         .cloned()
         .collect();
     let hops = digipeater_path.len() as u32;
 
     // APRS data type identifier (first info byte)
-    let ptype: char = pkt.dti
+    let ptype: char = meta.dti
         .map(|b| b as char)
         .or_else(|| info.chars().next())
         .unwrap_or('\0');
 
     // strict "any digipeater touched this" flag (includes WIDE-class fill-ins)
-    let was_digipeated = pkt.via_heard.iter().any(|&h| h);
+    let was_digipeated = meta.via.iter().any(|h| h.heard);
 
     // RF-only packets must not be igated
-    let rfonly = pkt.via.iter().any(|s| RFONLY_ADDRS.iter().any(|x| s.contains(x)));
+    let rfonly = meta.via.iter().any(|h| RFONLY_ADDRS.iter().any(|x| h.call.contains(x)));
 
-    // parse position/object/item data and the map symbol using aprs-decode.
-    // Prefer the validated AX.25 bytes; fall back to the TNC2 text on error.
+    // frequency in MHz from the RF metadata (or the SSRC, ka9q's kHz convention)
+    let frequency = frame.rf.frequency_hz
+        .map(|hz| hz as f64 / 1_000_000.0)
+        .or_else(|| frame.capture.ssrc.map(|s| s as f64 / 1000.0))
+        .unwrap_or(0.0);
+
+    // Canonical TNC2 text for display, reconstructed from the parsed packet (this
+    // includes the heard `*` markers). Falls back to a hand-built header when the
+    // frame couldn't be typed or re-encoded.
+    let raw = frame.parsed.as_ref()
+        .and_then(|p| p.encode_textual().ok())
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_else(|| {
+            if path.is_empty() {
+                format!("{}>{}:{}", meta.source, meta.destination, info)
+            } else {
+                format!("{}>{},{}:{}", meta.source, meta.destination, path, info)
+            }
+        });
+
+    // parse position/object/item data and the map symbol. Prefer the payload the
+    // producer already parsed; only decode the TNC2 text if it wasn't typed.
     let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
     let mut object_name: Option<String> = None;
     let (mut symbol_table, mut symbol_code) = (None, None);
 
-    let decoded = DecodedPacket::decode_ax25(&pkt.raw_ax25)
-        .or_else(|_| DecodedPacket::decode_textual(pkt.text.as_bytes()));
-    if let Ok(parsed) = decoded {
+    let parsed = frame.parsed.clone()
+        .or_else(|| DecodedPacket::decode_textual(raw.as_bytes()).ok());
+    if let Some(parsed) = parsed {
         match parsed.data {
             AprsData::Position(pos) => {
                 latitude = Some(pos.position.latitude.value());
@@ -717,20 +753,20 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
     let packet = RTPPacket {
         receivetime,
         received_instant,
-        raw: pkt.text,
+        raw,
         info,
         info_bytes,
         path,
         digipeater_path,
         hops,
         ptype,
-        source: pkt.source,
-        destination: pkt.destination,
-        heard_direct: pkt.heard_direct,
-        heardfrom: pkt.heard_from,
+        source: meta.source.clone(),
+        destination: meta.destination.clone(),
+        heard_direct: meta.heard_direct,
+        heardfrom: meta.heard_from.clone(),
         was_digipeated,
         rfonly,
-        frequency: pkt.freq_mhz,
+        frequency,
         is_satellite: false,
         igated: false,
         info_invalid_bytes,
@@ -738,9 +774,9 @@ fn map_packet(pkt: aprs_rtp::AprsPacket) -> MappedPacket {
         latitude,
         longitude,
         altitude_ft,
-        slicer_mask: pkt.slicer_mask,
+        slicer_mask: frame.rf.slicer_mask.unwrap_or(0),
         twist: None,
     };
 
-    MappedPacket { packet, symbol_table, symbol_code }
+    Some(MappedPacket { packet, symbol_table, symbol_code })
 }

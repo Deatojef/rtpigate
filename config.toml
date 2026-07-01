@@ -78,11 +78,23 @@ dao = "human"
 
 
 ###########################################
-# The [rtp] section specifies the hostname and port for listening to packets coming from the ka9q-radio backend.
+# The [stream] section selects the decoded-APRS multicast stream published by
+# aprs-streamd (the base service that owns the ka9q-radio RTP audio, demodulates,
+# and decodes once for all consumers). rtpigate no longer touches RTP audio — it
+# subscribes to typed frames here. `group` and `port` must match aprs-streamd's
+# emit destination.
 ###########################################
-[rtp]
-host = "packet.local"
-port = 5004
+[stream]
+group = "239.12.34.56"
+port = 17014
+
+# Optional: local interface (IP) to join the multicast group on for a multi-homed
+# host. Omit to let the OS choose.
+# interface = "192.168.1.20"
+
+# Optional: enlarge the receive buffer (bytes) to ride out bursts. The producer
+# applies no backpressure, so this is the consumer's only cushion against drops.
+# recv_buffer_bytes = 4194304
 
 
 ###########################################
@@ -114,21 +126,7 @@ min_beacon_secs = 30
 [satellite]
 frequencies = [145.825]
 
-
-###########################################
-# The [decoder] section tunes the AFSK demodulator's slicer bank. All settings
-# are optional; omit the section (or any field) to use the aprs-rtp defaults.
-###########################################
-[decoder]
-
-# Number of parallel amplitude-imbalance slicers (1-16). More slicers cover a
-# wider range of mark/space twist at the cost of CPU. Default: 8.
-slicers = 9
-
-# Gain-ladder bounds in twist dB (mark-minus-space amplitude imbalance). The
-# slicers are spread evenly across [min_twist_db, max_twist_db]. Negative dB is
-# tuned for space louder than mark, 0 dB for balanced, positive dB for mark
-# louder. Narrow the range to concentrate resolution where your receiver's
-# imbalance lands; widen it to cover more imbalance. Defaults: -12.0 / 9.0.
-min_twist_db = -12.0
-max_twist_db = 12.0
+# NOTE: the demodulator's slicer bank (the old [decoder] section) now lives in
+# aprs-streamd, which owns the decode. Its slicer count and gain ladder arrive on
+# the wire with every frame and drive the dashboard's slicer waterfall
+# automatically — there is nothing to configure here anymore.

@@ -20,8 +20,11 @@ tokio-util = "0.7.16"
 axum = { version = "0.8.4", features = ["json"] }
 tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
-#aprs-rtp = "0.1"
-aprs-rtp = "0.2"
+# rtpigate no longer owns the RTP-listen -> demod -> decode chain. It subscribes to
+# the decoded, typed frames published by aprs-streamd and consumes them via the
+# shared aprs-stream crate. aprs-decode is still used directly for the parsed APRS
+# payload types (position/Mic-E/object/item, symbol) carried on those frames.
+aprs-stream = { git = "https://github.com/deatojef/aprs-stream.git" }
 aprs-decode = "0.1"
 gpsd_proto = "1.0.0"
 

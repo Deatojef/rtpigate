@@ -1,12 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fs, ops::Add, time::{Duration, Instant}};
+use std::{collections::VecDeque, fs, net::Ipv4Addr, ops::Add, time::{Duration, Instant}};
 use chrono::{DateTime, Local, Utc};
 
 use crate::error::RtpigateError;
 
-use crate::ka9q::Packet;
-
-use aprs_rtp::config::DecoderConfig;
+use crate::stream::Packet;
 
 #[derive(Debug, Clone)]
 pub enum DataItem {
@@ -188,10 +186,9 @@ pub struct Config {
     pub station: StationConfig,
     pub location: Location,
     pub aprsis: AprsisConfig,
-    pub rtp: RtpConfig,
+    pub stream: StreamConfig,
     pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
-    pub decoder: Option<DecoderSettings>,
     pub gpsd: Option<GpsdConfig>,
 }
 
@@ -301,27 +298,25 @@ pub struct AprsisConfig {
     pub dao: Option<DaoMode>,
 }
 
+/// The decoded-APRS multicast stream published by `aprs-streamd`. `group` is the
+/// multicast group address and `port` the UDP port to subscribe on — these must
+/// match the producer's emit destination. `interface` selects the local NIC to
+/// join the group on for a multi-homed host (OS default when omitted);
+/// `recv_buffer_bytes` optionally enlarges `SO_RCVBUF` to ride out bursts, the
+/// consumer's only defense since the producer applies no backpressure.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct RtpConfig {
-    pub host: String,
-    pub port: u32,
+pub struct StreamConfig {
+    pub group: Ipv4Addr,
+    pub port: u16,
+    #[serde(default)]
+    pub interface: Option<Ipv4Addr>,
+    #[serde(default)]
+    pub recv_buffer_bytes: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SatelliteConfig {
     pub frequencies: Option<Vec<f64>>,
-}
-
-/// Optional overrides for the aprs-rtp demodulator's slicer bank. All fields
-/// default to the crate's `DecoderConfig::default()` when omitted. `slicers` is
-/// the number of parallel amplitude-imbalance slicers (1–16); `min_twist_db`
-/// and `max_twist_db` bound the gain ladder those slicers are spread across,
-/// expressed in twist dB (mark-minus-space amplitude imbalance).
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct DecoderSettings {
-    pub slicers: Option<usize>,
-    pub min_twist_db: Option<f32>,
-    pub max_twist_db: Option<f32>,
 }
 
 /// Sanitized APRS-IS config for the frontend (passcode omitted)
@@ -344,7 +339,7 @@ pub struct PublicConfig {
     pub station: StationConfig,
     pub location: Location,
     pub aprsis: AprsisConfigPublic,
-    pub rtp: RtpConfig,
+    pub stream: StreamConfig,
     pub satellite_frequencies: Vec<f64>,
     /// Effective GPSD settings (defaults resolved), present only when
     /// `[location] source = "gpsd"`.
@@ -368,7 +363,7 @@ impl Config {
                 threshold: self.aprsis.threshold,
                 dao: self.dao_mode(),
             },
-            rtp: self.rtp.clone(),
+            stream: self.stream.clone(),
             satellite_frequencies: self.satellite_frequencies(),
             // expose the effective (defaults-resolved) GPSD settings only when it
             // is the position source
@@ -391,26 +386,6 @@ impl Config {
     /// human-readable when `[aprsis] dao` is omitted.
     pub fn dao_mode(&self) -> DaoMode {
         self.aprsis.dao.unwrap_or_default()
-    }
-
-    /// Builds the aprs-rtp `DecoderConfig`, starting from the crate defaults and
-    /// applying any overrides from the optional `[decoder]` section. Only the
-    /// slicer count and gain-ladder bounds are configurable here; the remaining
-    /// fields (tones, baud, fix_bits) keep their crate defaults.
-    pub fn decoder_config(&self) -> DecoderConfig {
-        let mut decoder = DecoderConfig::default();
-        if let Some(d) = &self.decoder {
-            if let Some(slicers) = d.slicers {
-                decoder.slicers = slicers;
-            }
-            if let Some(min) = d.min_twist_db {
-                decoder.min_twist_db = min;
-            }
-            if let Some(max) = d.max_twist_db {
-                decoder.max_twist_db = max;
-            }
-        }
-        decoder
     }
 
     /// Returns the effective GPSD settings, falling back to defaults when the
@@ -464,12 +439,17 @@ impl Config {
             _ => {},
         }
 
-        // RTP host/port are required (already non-optional in the struct, but validate content)
-        if self.rtp.host.is_empty() {
-            errors.push("[rtp] host is required".into());
+        // Stream group/port are required. The group must be a multicast address
+        // (224.0.0.0/4) since we join it via IGMP; a unicast address here is a
+        // configuration mistake that would silently receive nothing.
+        if !self.stream.group.is_multicast() {
+            errors.push(format!(
+                "[stream] group {} is not a multicast address (224.0.0.0 – 239.255.255.255)",
+                self.stream.group
+            ));
         }
-        if self.rtp.port == 0 {
-            errors.push("[rtp] port must be > 0".into());
+        if self.stream.port == 0 {
+            errors.push("[stream] port must be > 0".into());
         }
 
         // Location validation — lat/lon ranges
@@ -520,23 +500,6 @@ impl Config {
                     if secs == 0 {
                         errors.push("[gpsd] min_beacon_secs must be > 0".into());
                     }
-                }
-            }
-        }
-
-        // Decoder slicer/gain-ladder validation (matches aprs-rtp's accepted ranges)
-        if let Some(ref decoder) = self.decoder {
-            if let Some(slicers) = decoder.slicers {
-                if !(1..=16).contains(&slicers) {
-                    errors.push(format!("[decoder] slicers {} is out of range (1 to 16)", slicers));
-                }
-            }
-            if let (Some(min), Some(max)) = (decoder.min_twist_db, decoder.max_twist_db) {
-                if min >= max {
-                    errors.push(format!(
-                        "[decoder] min_twist_db ({}) must be less than max_twist_db ({})",
-                        min, max
-                    ));
                 }
             }
         }

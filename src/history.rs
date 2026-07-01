@@ -1,7 +1,7 @@
 // Rolling 24-hour history of per-interval packet/igating statistics, merged from
 // the two independently-ticking telemetry streams:
 //
-//   * `PacketTelemetry`  (ka9q rtp_listener)  — total / direct / digipeated / errors
+//   * `PacketTelemetry`  (stream rtp_listener) — total / direct / digipeated / errors
 //   * `AprsisTelemetry`  (aprs_is task)       — igated / dropped / rf_received / reconnects
 //
 // Both tasks emit on their own ~15s timer, so we merge by a 15s-aligned timestamp
@@ -70,7 +70,7 @@ impl HistoryStore {
         }
     }
 
-    /// Merge the ka9q-side counts (total / direct / digipeated / errors).
+    /// Merge the stream-side counts (total / direct / digipeated / errors).
     pub fn update_from_packet(&mut self, t: &PacketTelemetry) {
         self.merge_series(&t.total_packets, |b, v| b.total = v);
         self.merge_series(&t.heard_direct, |b, v| b.direct = v);

@@ -15,7 +15,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 use crate::config::{Config, APRSISLogin, APRSISPasscode, AppTelemetry, DataSeries, DataPoint, AprsisTelemetry, DataItem, GpsFix, Location, PositionSource, DaoMode};
 use crate::error::RtpigateError;
-use crate::ka9q::Packet;
+use crate::stream::Packet;
 use crate::igate::{self, TOCALL, AnalogItem, APRSQuadratic, Telemetry};
 
 
