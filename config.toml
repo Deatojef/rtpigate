@@ -133,6 +133,12 @@ min_beacon_secs = 30
 [storage]
 # path = "./rtpigate.db"
 path = "/var/lib/rtpigate/rtpigate.db"
+#
+# Rolling packet-history window in hours, used by the per-station monitor tabs
+# in the web frontend. Every heard packet is retained for this long so any
+# station can be monitored with full backfill; older rows are pruned. Defaults
+# to 6 when omitted. Larger values retain more history (and use more disk).
+# packet_history = 6
 
 
 ###########################################

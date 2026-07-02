@@ -511,15 +511,96 @@ main {
     padding-bottom: 4px;
 }
 
-#packet-scroll {
+/* Packet tabs: reuse the shared .tab-btn styling. Station tabs carry a close
+   affordance to the right of the callsign label. */
+#packet-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.station-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.station-tab-close {
+    font-size: 1.1em;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+.station-tab-close:hover {
+    color: var(--warn);
+    opacity: 1;
+}
+
+/* Only the active packet panel is shown. */
+.packet-panel {
+    display: none;
+}
+
+.packet-panel.active {
+    display: block;
+}
+
+/* Transient notice under the tabs (e.g. the watched-limit message). */
+#packet-notice {
+    display: none;
+    font-size: 0.85em;
+    color: var(--warn);
+    margin-bottom: 6px;
+}
+
+#packet-notice.visible {
+    display: block;
+}
+
+.packet-scroll {
     overflow-x: auto;
 }
 
-#packet-table {
+/* Station tabs cap their height to roughly the Recent tab's 20 rows and scroll. */
+.station-scroll {
+    max-height: 30rem;
+    overflow-y: auto;
+}
+
+/* Monitor ("M") column, only present in the Recent Packets table. */
+th.monitor-col {
+    width: 1.6em;
+}
+
+td.pkt-monitor {
+    text-align: center;
+    padding: 2px 4px;
+}
+
+.monitor-btn {
+    font-family: inherit;
+    font-size: 0.8em;
+    line-height: 1;
+    padding: 1px 5px;
+    border: 1px solid var(--panel-border);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.monitor-btn:hover {
+    color: #fff;
+    background-color: var(--highlight);
+    border-color: var(--highlight);
+}
+
+.packet-table {
     border-collapse: collapse;
 }
 
-#packet-table thead th {
+.packet-table thead th {
     font-variant: small-caps;
     font-size: 1.0em;
     color: var(--text-secondary);
@@ -529,24 +610,19 @@ main {
     white-space: nowrap;
 }
 
-#packet-table th:nth-child(5)  { text-align: center; }  /* Direct */
-#packet-table th:nth-child(6)  { text-align: center; }  /* Sat */
-#packet-table th:nth-child(7)  { text-align: center; }  /* Dropped */
-#packet-table th:nth-child(8)  { text-align: center; }  /* Garbled */
-#packet-table th:nth-child(9)  { text-align: center; }  /* Twist */
-#packet-table th:nth-child(11) { text-align: center; }  /* Hops */
+.packet-table thead th.center { text-align: center; }
 
-#packet-table tbody td {
+.packet-table tbody td {
     padding: 2px 6px;
     vertical-align: middle;
     white-space: nowrap;
 }
 
-#packet-table tbody tr {
+.packet-table tbody tr {
     border-bottom: 1px solid var(--row-border);
 }
 
-#packet-table tbody tr:hover {
+.packet-table tbody tr:hover {
     background-color: var(--row-hover);
 }
 

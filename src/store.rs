@@ -189,6 +189,53 @@ struct SatPacketRec {
     altitude_ft: Option<f64>,
 }
 
+// Table keyed by callsign: one watched station (a monitor tab the frontend has
+// open). This set is a UI concern only — it records which per-station tabs to
+// restore on reload/restart and does NOT gate what gets persisted; every heard
+// packet is stored in `PacketRec` regardless. `added_micros` preserves tab order.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 9, version = 1)]
+#[native_db]
+struct WatchedStationRec {
+    #[primary_key]
+    callsign: String,
+    added_micros: i64,
+}
+
+// Table keyed by receive-time microseconds: one heard packet in the rolling
+// packet-history window (see `[storage] packet_history`). Same display fields as
+// `SatPacketRec`; the `source` secondary key lets a monitor tab range-scan just
+// one station's packets. Non-satellite and satellite packets alike land here —
+// the separate 24h `SatPacketRec` table is left untouched.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 10, version = 1)]
+#[native_db]
+struct PacketRec {
+    #[primary_key]
+    key_micros: i64,
+    #[secondary_key]
+    source: String,
+    raw: String,
+    info: String,
+    path: String,
+    digipeater_path: Vec<String>,
+    hops: u32,
+    ptype: char,
+    destination: String,
+    heard_direct: bool,
+    heardfrom: String,
+    was_digipeated: bool,
+    rfonly: bool,
+    frequency: f64,
+    is_satellite: bool,
+    igated: bool,
+    info_invalid_bytes: u64,
+    object_name: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    altitude_ft: Option<f64>,
+}
+
 //======================= model registry ===============================
 
 static MODELS: LazyLock<Models> = LazyLock::new(|| {
@@ -203,6 +250,8 @@ static MODELS: LazyLock<Models> = LazyLock::new(|| {
     models.define::<FreqRec>().unwrap();
     models.define::<HistoryBucketRec>().unwrap();
     models.define::<SatPacketRec>().unwrap();
+    models.define::<WatchedStationRec>().unwrap();
+    models.define::<PacketRec>().unwrap();
     models
 });
 
@@ -327,6 +376,68 @@ impl SatPacketRec {
     // (`received_instant`, `info_bytes`, `slicer_mask`) and `twist` are only used
     // in the live gating/aggregation paths, never for restored packets (which are
     // read solely by the /api/satellite-packets JSON handler), so defaults are safe.
+    fn into_packet(self) -> RTPPacket {
+        RTPPacket {
+            receivetime: from_micros(self.key_micros),
+            received_instant: Instant::now(),
+            raw: self.raw,
+            info: self.info,
+            info_bytes: Vec::new(),
+            path: self.path,
+            digipeater_path: self.digipeater_path,
+            hops: self.hops,
+            ptype: self.ptype,
+            source: self.source,
+            destination: self.destination,
+            heard_direct: self.heard_direct,
+            heardfrom: self.heardfrom,
+            was_digipeated: self.was_digipeated,
+            rfonly: self.rfonly,
+            frequency: self.frequency,
+            is_satellite: self.is_satellite,
+            igated: self.igated,
+            info_invalid_bytes: self.info_invalid_bytes as usize,
+            object_name: self.object_name,
+            latitude: self.latitude,
+            longitude: self.longitude,
+            altitude_ft: self.altitude_ft,
+            slicer_mask: 0,
+            twist: None,
+        }
+    }
+}
+
+impl PacketRec {
+    fn from_packet(p: &RTPPacket) -> Self {
+        PacketRec {
+            key_micros: to_micros(&p.receivetime),
+            source: p.source.clone(),
+            raw: p.raw.clone(),
+            info: p.info.clone(),
+            path: p.path.clone(),
+            digipeater_path: p.digipeater_path.clone(),
+            hops: p.hops,
+            ptype: p.ptype,
+            destination: p.destination.clone(),
+            heard_direct: p.heard_direct,
+            heardfrom: p.heardfrom.clone(),
+            was_digipeated: p.was_digipeated,
+            rfonly: p.rfonly,
+            frequency: p.frequency,
+            is_satellite: p.is_satellite,
+            igated: p.igated,
+            info_invalid_bytes: p.info_invalid_bytes as u64,
+            object_name: p.object_name.clone(),
+            latitude: p.latitude,
+            longitude: p.longitude,
+            altitude_ft: p.altitude_ft,
+        }
+    }
+
+    // Reconstruct a display-only RTPPacket. As with `SatPacketRec::into_packet`,
+    // the non-serialized live-path fields (`received_instant`, `info_bytes`,
+    // `slicer_mask`, `twist`) are never read for restored packets — they feed only
+    // the /api/station-packets JSON handler — so defaults are safe.
     fn into_packet(self) -> RTPPacket {
         RTPPacket {
             receivetime: from_micros(self.key_micros),
@@ -580,6 +691,85 @@ impl Store {
             if let Some(rec) = rw.get().primary::<SatPacketRec>(k)? {
                 rw.remove(rec)?;
             }
+        }
+        rw.commit()?;
+        Ok(())
+    }
+
+    //---- watched stations (monitor tabs) ---------------------------
+
+    /// Load the watched-station set (open monitor tabs), oldest-added first so
+    /// the frontend restores tabs in the order they were opened.
+    pub fn load_watched_stations(&self) -> Result<Vec<String>, RtpigateError> {
+        let r = self.db.r_transaction()?;
+        let mut recs: Vec<WatchedStationRec> =
+            r.scan().primary()?.all()?.collect::<Result<_, _>>()?;
+        recs.sort_by_key(|s| s.added_micros);
+        Ok(recs.into_iter().map(|s| s.callsign).collect())
+    }
+
+    pub fn add_watched_station(
+        &self,
+        callsign: &str,
+        added: &DateTime<Local>,
+    ) -> Result<(), RtpigateError> {
+        let rw = self.db.rw_transaction()?;
+        rw.upsert(WatchedStationRec {
+            callsign: callsign.to_string(),
+            added_micros: to_micros(added),
+        })?;
+        rw.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_watched_station(&self, callsign: &str) -> Result<(), RtpigateError> {
+        let rw = self.db.rw_transaction()?;
+        if let Some(rec) = rw
+            .get()
+            .primary::<WatchedStationRec>(callsign.to_string())?
+        {
+            rw.remove(rec)?;
+        }
+        rw.commit()?;
+        Ok(())
+    }
+
+    //---- rolling packet-history log --------------------------------
+
+    /// Persist one heard packet into the rolling history window.
+    pub fn insert_packet(&self, p: &RTPPacket) -> Result<(), RtpigateError> {
+        let rw = self.db.rw_transaction()?;
+        rw.upsert(PacketRec::from_packet(p))?;
+        rw.commit()?;
+        Ok(())
+    }
+
+    /// All stored packets for one source callsign-ssid, newest-first, via the
+    /// `source` secondary key (no full-table scan).
+    pub fn load_packets_by_source(&self, source: &str) -> Result<Vec<RTPPacket>, RtpigateError> {
+        let r = self.db.r_transaction()?;
+        let key = source.to_string();
+        let mut recs: Vec<PacketRec> = r
+            .scan()
+            .secondary(PacketRecKey::source)?
+            .range(key.clone()..=key)?
+            .collect::<Result<_, _>>()?;
+        // Secondary-scan order is by source then primary key; sort newest-first.
+        recs.sort_by_key(|p| std::cmp::Reverse(p.key_micros));
+        Ok(recs.into_iter().map(PacketRec::into_packet).collect())
+    }
+
+    /// Remove every stored packet whose receive time is older than `cutoff_micros`.
+    /// The primary key is receive-time microseconds, so a range scan bounds the work.
+    pub fn prune_packets(&self, cutoff_micros: i64) -> Result<(), RtpigateError> {
+        let rw = self.db.rw_transaction()?;
+        let stale: Vec<PacketRec> = rw
+            .scan()
+            .primary()?
+            .range(..cutoff_micros)?
+            .collect::<Result<_, _>>()?;
+        for rec in stale {
+            rw.remove(rec)?;
         }
         rw.commit()?;
         Ok(())

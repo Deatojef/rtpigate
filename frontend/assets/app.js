@@ -1626,9 +1626,40 @@
 
     // ---- Packet row creation ----
 
-    function addPacketRow(type, data) {
+    // Build and insert a packet row.
+    //   opts.body    - target <tbody> (defaults to the Recent Packets body)
+    //   opts.monitor - prepend the "M" (monitor) button column (Recent tab only)
+    //   opts.trim    - cap the tbody to this many rows, dropping the oldest
+    // Returns the created <tr>.
+    function addPacketRow(type, data, opts) {
+        opts = opts || {};
+        var targetBody = opts.body || packetBody;
+
         var tr = document.createElement("tr");
         tr.className = type === "rf" ? "rf-packet" : "inet-packet";
+        // Stash the receive time (ms) so station tabs can age out stale rows.
+        tr._rt = Date.parse(data.receivetime);
+
+        // Monitor button ("M") — only shown in the Recent Packets tab. Clicking
+        // it flags the source station for its own filtered tab.
+        if (opts.monitor) {
+            var tdMon = document.createElement("td");
+            tdMon.className = "pkt-monitor";
+            if (type === "rf" && data.source) {
+                var mBtn = document.createElement("button");
+                mBtn.className = "monitor-btn";
+                mBtn.textContent = "M";
+                mBtn.title = "Monitor " + data.source + " in its own tab";
+                (function (station) {
+                    mBtn.addEventListener("click", function (e) {
+                        e.stopPropagation();
+                        watchStation(station);
+                    });
+                })(data.source);
+                tdMon.appendChild(mBtn);
+            }
+            tr.appendChild(tdMon);
+        }
 
         // Time
         var tdTime = document.createElement("td");
@@ -1835,16 +1866,212 @@
         });
         tr.appendChild(tdText);
 
-        // Insert at top
-        if (packetBody.firstChild) {
-            packetBody.insertBefore(tr, packetBody.firstChild);
+        // Insert at top (newest-first)
+        if (targetBody.firstChild) {
+            targetBody.insertBefore(tr, targetBody.firstChild);
         } else {
-            packetBody.appendChild(tr);
+            targetBody.appendChild(tr);
         }
 
-        // Trim to MAX_PACKETS
-        while (packetBody.children.length > MAX_PACKETS) {
-            packetBody.removeChild(packetBody.lastChild);
+        // Trim to the row cap when one is set (Recent Packets: MAX_PACKETS).
+        if (opts.trim) {
+            while (targetBody.children.length > opts.trim) {
+                targetBody.removeChild(targetBody.lastChild);
+            }
+        }
+
+        return tr;
+    }
+
+    // ---- Watched-station monitor tabs ----
+    //
+    // Clicking the "M" button on a Recent Packets row flags that source station
+    // for its own filtered tab. The watched set is backend state (persisted so
+    // tabs restore on reload); every packet is stored server-side, so a tab is
+    // backfilled with the full rolling-history window for its station. Live
+    // packets are routed into open tabs from the rfpacket SSE stream.
+
+    var MAX_WATCHED = 6;             // keep in sync with backend MAX_WATCHED
+    var STATION_MAX_ROWS = 3000;     // DOM safety cap per station tab
+    var stationTabs = {};            // station -> { btn, panel, body }
+    var packetNoticeTimer = null;
+
+    // Column headers for a station tab: identical to Recent Packets minus the
+    // leading "M" (monitor) column, which only belongs in the Recent tab.
+    function buildStationTable() {
+        var scroll = document.createElement("div");
+        scroll.className = "packet-scroll station-scroll";
+        var table = document.createElement("table");
+        table.className = "packet-table";
+        var thead = document.createElement("thead");
+        var htr = document.createElement("tr");
+        var cols = ["Time", "", "Source", "Freq", "Direct", "Sat", "Dropped",
+            "Garbled", "Twist", "Coordinates", "Hops", "Path", "Packet"];
+        var centered = { "Direct": 1, "Sat": 1, "Dropped": 1, "Garbled": 1, "Twist": 1, "Hops": 1 };
+        for (var i = 0; i < cols.length; i++) {
+            var th = document.createElement("th");
+            th.textContent = cols[i];
+            if (centered[cols[i]]) th.className = "center";
+            htr.appendChild(th);
+        }
+        thead.appendChild(htr);
+        table.appendChild(thead);
+        var tbody = document.createElement("tbody");
+        table.appendChild(tbody);
+        scroll.appendChild(table);
+        return { scroll: scroll, body: tbody };
+    }
+
+    // Show a tab. Pass null to select the Recent Packets tab.
+    function activatePacketTab(station) {
+        var recentBtn = document.getElementById("packet-tab-recent");
+        var recentPanel = document.getElementById("packet-panel-recent");
+        recentBtn.classList.toggle("active", station === null);
+        recentPanel.classList.toggle("active", station === null);
+        for (var key in stationTabs) {
+            if (!stationTabs.hasOwnProperty(key)) continue;
+            stationTabs[key].btn.classList.toggle("active", key === station);
+            stationTabs[key].panel.classList.toggle("active", key === station);
+        }
+    }
+
+    // Create (if needed) a tab + panel for a station. `activate` focuses it.
+    function openStationTab(station, activate) {
+        if (stationTabs[station]) {
+            if (activate) activatePacketTab(station);
+            return stationTabs[station];
+        }
+
+        var btn = document.createElement("button");
+        btn.className = "tab-btn station-tab-btn";
+        btn.setAttribute("data-station", station);
+        var label = document.createElement("span");
+        label.className = "station-tab-label";
+        label.textContent = station;
+        btn.appendChild(label);
+        var close = document.createElement("span");
+        close.className = "station-tab-close";
+        close.textContent = "×"; // ×
+        close.title = "Stop monitoring " + station;
+        btn.appendChild(close);
+        btn.addEventListener("click", function () { activatePacketTab(station); });
+        close.addEventListener("click", function (e) {
+            e.stopPropagation();
+            closeStationTab(station);
+        });
+        document.getElementById("packet-tabs").appendChild(btn);
+
+        var built = buildStationTable();
+        var panel = document.createElement("div");
+        panel.className = "packet-panel";
+        panel.setAttribute("data-station", station);
+        panel.appendChild(built.scroll);
+        document.getElementById("packet-panels").appendChild(panel);
+
+        stationTabs[station] = { btn: btn, panel: panel, body: built.body };
+        if (activate) activatePacketTab(station);
+        backfillStationTab(station);
+        return stationTabs[station];
+    }
+
+    // Load the station's rolling-history packets and fill its tab, newest-first.
+    function backfillStationTab(station) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/api/station-packets?station=" + encodeURIComponent(station), true);
+        xhr.onload = function () {
+            var entry = stationTabs[station];
+            if (xhr.status !== 200 || !entry) return;
+            var packets;
+            try { packets = JSON.parse(xhr.responseText) || []; }
+            catch (e) { return; }
+            entry.body.innerHTML = "";
+            // Server sends newest-first; addPacketRow inserts at the top, so feed
+            // oldest-first to end up newest-first in the DOM.
+            for (var i = packets.length - 1; i >= 0; i--) {
+                addPacketRow("rf", packets[i], { body: entry.body, trim: STATION_MAX_ROWS });
+            }
+        };
+        xhr.send();
+    }
+
+    // Fan a live packet out to its station tab, if one is open.
+    function routeToStationTab(data) {
+        if (!data.source) return;
+        var entry = stationTabs[data.source];
+        if (!entry) return;
+        addPacketRow("rf", data, { body: entry.body, trim: STATION_MAX_ROWS });
+    }
+
+    // Handle an "M" click: register the station with the backend, then open its
+    // tab. Enforces the 6-station cap both client-side and via the 409 response.
+    function watchStation(station) {
+        if (!station) return;
+        if (stationTabs[station]) { activatePacketTab(station); return; }
+        if (Object.keys(stationTabs).length >= MAX_WATCHED) {
+            showPacketNotice("Max " + MAX_WATCHED + " watched stations");
+            return;
+        }
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/watched", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onload = function () {
+            if (xhr.status === 200) {
+                openStationTab(station, true);
+            } else if (xhr.status === 409) {
+                showPacketNotice("Max " + MAX_WATCHED + " watched stations");
+            }
+        };
+        xhr.send(JSON.stringify({ station: station }));
+    }
+
+    // Close a station tab and tell the backend to stop tracking it. Stored
+    // packets are left intact (they age out on the server's rolling prune).
+    function closeStationTab(station) {
+        var entry = stationTabs[station];
+        if (!entry) return;
+        var wasActive = entry.btn.classList.contains("active");
+        if (entry.btn.parentNode) entry.btn.parentNode.removeChild(entry.btn);
+        if (entry.panel.parentNode) entry.panel.parentNode.removeChild(entry.panel);
+        delete stationTabs[station];
+        if (wasActive) activatePacketTab(null);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open("DELETE", "/api/watched/" + encodeURIComponent(station), true);
+        xhr.send();
+    }
+
+    // On load, restore the tabs the backend still has watched.
+    function restoreWatchedTabs() {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "/api/watched", true);
+        xhr.onload = function () {
+            if (xhr.status !== 200) return;
+            var list;
+            try { list = JSON.parse(xhr.responseText) || []; }
+            catch (e) { return; }
+            for (var i = 0; i < list.length; i++) {
+                openStationTab(list[i], false);
+            }
+        };
+        xhr.send();
+    }
+
+    // Transient notice under the packet tabs (e.g. the watched-limit message).
+    function showPacketNotice(msg) {
+        var el = document.getElementById("packet-notice");
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add("visible");
+        if (packetNoticeTimer) clearTimeout(packetNoticeTimer);
+        packetNoticeTimer = setTimeout(function () {
+            el.classList.remove("visible");
+        }, 3000);
+    }
+
+    function setupPacketTabs() {
+        var recentBtn = document.getElementById("packet-tab-recent");
+        if (recentBtn) {
+            recentBtn.addEventListener("click", function () { activatePacketTab(null); });
         }
     }
 
@@ -1914,7 +2141,8 @@
         es.addEventListener("rfpacket", function (e) {
             onMessage();
             var data = JSON.parse(e.data);
-            addPacketRow("rf", data);
+            addPacketRow("rf", data, { monitor: true, trim: MAX_PACKETS });
+            routeToStationTab(data);
             if (data.is_satellite) {
                 satPackets.unshift(data);
                 pruneSatPackets();
@@ -2049,11 +2277,13 @@
     setupThemeToggle();
     setupTabs();
     setupPanelTabs();
+    setupPacketTabs();
     setupRangeSelector();
     initActivityChart();
     initSlicerDistChart();
     seedActivityHistory().then(updateActivityChart);
     fetchConfig();
     fetchSatellitePackets();
+    restoreWatchedTabs();
     connectSSE();
 })();

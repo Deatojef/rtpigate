@@ -217,6 +217,76 @@ fn telemetry_seq_round_trip() {
     let _ = std::fs::remove_file(&path);
 }
 
+fn packet_with(source: &str, receivetime: chrono::DateTime<Local>) -> RTPPacket {
+    let mut p = sample_packet(144.390);
+    p.source = source.to_string();
+    p.receivetime = receivetime;
+    p
+}
+
+#[test]
+fn watched_stations_add_load_remove() {
+    let path = temp_db_path("watched");
+    let store = Store::open(&path).unwrap();
+
+    assert!(store.load_watched_stations().unwrap().is_empty());
+
+    // Add out of chronological order; load returns them oldest-added first.
+    let now = Local::now();
+    store
+        .add_watched_station("W1AW-9", &(now + chrono::Duration::seconds(2)))
+        .unwrap();
+    store.add_watched_station("N0CALL-1", &now).unwrap();
+
+    let loaded = store.load_watched_stations().unwrap();
+    assert_eq!(loaded, vec!["N0CALL-1".to_string(), "W1AW-9".to_string()]);
+
+    store.remove_watched_station("N0CALL-1").unwrap();
+    assert_eq!(
+        store.load_watched_stations().unwrap(),
+        vec!["W1AW-9".to_string()]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn packets_query_by_source_and_prune() {
+    let path = temp_db_path("packets");
+    let store = Store::open(&path).unwrap();
+
+    // Distinct receive times: the primary key is receive-time micros, so packets
+    // sharing a microsecond would collide (as with the satellite log).
+    let now = Local::now();
+    let old = now - chrono::Duration::hours(2);
+    let mid = now - chrono::Duration::minutes(30);
+
+    // Two packets from A (different times) + one from B.
+    store.insert_packet(&packet_with("A-1", old)).unwrap();
+    store.insert_packet(&packet_with("A-1", now)).unwrap();
+    store.insert_packet(&packet_with("B-2", mid)).unwrap();
+
+    // Secondary-key query returns only the requested source, newest-first.
+    let a = store.load_packets_by_source("A-1").unwrap();
+    assert_eq!(a.len(), 2);
+    assert!(a.iter().all(|p| p.source == "A-1"));
+    assert!(a[0].receivetime >= a[1].receivetime);
+    assert_eq!(store.load_packets_by_source("B-2").unwrap().len(), 1);
+    assert!(store.load_packets_by_source("Z-9").unwrap().is_empty());
+
+    // Prune everything older than 1h: the 2h-old A packet goes, the rest stay.
+    let cutoff = (now - chrono::Duration::hours(1)).timestamp_micros();
+    store.prune_packets(cutoff).unwrap();
+
+    let a_after = store.load_packets_by_source("A-1").unwrap();
+    assert_eq!(a_after.len(), 1);
+    assert_eq!(
+        a_after[0].receivetime.timestamp_micros(),
+        now.timestamp_micros()
+    );
+    assert_eq!(store.load_packets_by_source("B-2").unwrap().len(), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn sat_packets_round_trip_and_prune() {
     let path = temp_db_path("sat");

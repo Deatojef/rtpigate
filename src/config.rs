@@ -337,10 +337,14 @@ pub struct SatelliteConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct StorageConfig {
     pub path: Option<String>,
+    /// Rolling packet-history window in hours, used by the per-station monitor
+    /// tabs. Defaults to `DEFAULT_PACKET_HISTORY_HOURS` when omitted.
+    pub packet_history: Option<u32>,
 }
 
 impl StorageConfig {
     pub const DEFAULT_PATH: &'static str = "./rtpigate.db";
+    pub const DEFAULT_PACKET_HISTORY_HOURS: u32 = 6;
 }
 
 /// Sanitized APRS-IS config for the frontend (passcode omitted)
@@ -435,6 +439,16 @@ impl Config {
             .and_then(|s| s.path.clone())
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| StorageConfig::DEFAULT_PATH.to_string())
+    }
+
+    /// Returns the configured rolling packet-history window in hours, defaulting
+    /// to `DEFAULT_PACKET_HISTORY_HOURS` when the `[storage]` section (or its
+    /// `packet_history`) is omitted.
+    pub fn packet_history_hours(&self) -> u32 {
+        self.storage
+            .as_ref()
+            .and_then(|s| s.packet_history)
+            .unwrap_or(StorageConfig::DEFAULT_PACKET_HISTORY_HOURS)
     }
 }
 
@@ -560,6 +574,15 @@ impl Config {
                 "[storage] path parent directory '{}' does not exist",
                 parent.display()
             ));
+        }
+
+        // Storage packet-history validation — a zero-hour window would prune
+        // every packet immediately, leaving the monitor tabs permanently empty.
+        if let Some(ref storage) = self.storage
+            && let Some(hours) = storage.packet_history
+            && hours == 0
+        {
+            errors.push("[storage] packet_history must be >= 1".into());
         }
 
         // HTTP listen address validation

@@ -584,6 +584,13 @@ pub async fn rtp_listener(
                     if let Err(e) = store.delete_sat_packets(&pruned_sat_keys) {
                         warn!("Failed to delete pruned satellite packets: {}", e);
                     }
+
+                    // Prune the rolling packet-history window to its configured
+                    // length (default 6h) so the all-packets log stays bounded.
+                    let packet_cutoff = now - chrono::Duration::hours(config.packet_history_hours() as i64);
+                    if let Err(e) = store.prune_packets(packet_cutoff.timestamp_micros()) {
+                        warn!("Failed to prune packet history: {}", e);
+                    }
                 },
 
 
@@ -763,6 +770,14 @@ pub async fn rtp_listener(
                                 if let Err(e) = store.insert_sat_packet(&p) {
                                     warn!("Failed to persist satellite packet: {}", e);
                                 }
+                            }
+
+                            // Persist every heard packet into the rolling
+                            // packet-history window ([storage] packet_history) so any
+                            // station can be monitored with full backfill. Pruned on
+                            // the periodic tick below.
+                            if let Err(e) = store.insert_packet(&p) {
+                                warn!("Failed to persist packet: {}", e);
                             }
 
                             // attempt to send this packet to the channel so downstream

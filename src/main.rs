@@ -2,9 +2,10 @@
 
 use axum::{
     Router,
-    extract::{FromRef, State},
+    extract::{FromRef, Path, Query, State},
+    http::StatusCode,
     response::{Json, Sse, sse::Event},
-    routing::get,
+    routing::{delete, get},
 };
 use chrono::Local;
 use std::{
@@ -48,6 +49,9 @@ use store::Store;
 mod sse;
 use sse::{SSEEvent, sse_task};
 
+// Maximum number of simultaneously watched stations (monitor tabs).
+const MAX_WATCHED: usize = 6;
+
 // for the axum application state
 #[derive(Clone)]
 struct AppState {
@@ -55,6 +59,8 @@ struct AppState {
     public_config: Arc<RwLock<PublicConfig>>,
     sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>>,
     history: Arc<RwLock<HistoryStore>>,
+    watched_stations: Arc<RwLock<Vec<String>>>,
+    store: Arc<Store>,
 }
 
 impl FromRef<AppState> for broadcast::Sender<SSEEvent> {
@@ -78,6 +84,18 @@ impl FromRef<AppState> for Arc<RwLock<VecDeque<RTPPacket>>> {
 impl FromRef<AppState> for Arc<RwLock<HistoryStore>> {
     fn from_ref(app_state: &AppState) -> Self {
         app_state.history.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<RwLock<Vec<String>>> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.watched_stations.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<Store> {
+    fn from_ref(app_state: &AppState) -> Self {
+        app_state.store.clone()
     }
 }
 
@@ -234,6 +252,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let gps_state: Arc<RwLock<Option<GpsFix>>> = Arc::new(RwLock::new(None));
 
     //#################
+    // Watched-station set (open monitor tabs), a UI concern managed by the
+    // /api/watched handlers. Seeded from the store so tabs restore across
+    // restarts. Does NOT gate what gets persisted — every packet is stored.
+    //#################
+    let watched_stations: Arc<RwLock<Vec<String>>> = {
+        let restored = store.load_watched_stations().unwrap_or_else(|e| {
+            warn!("Failed to load watched stations from store: {}", e);
+            Vec::new()
+        });
+        Arc::new(RwLock::new(restored))
+    };
+
+    //#################
     // rtp_listener task
     //#################
     let rtp_tx_sender = data_tx.clone();
@@ -338,6 +369,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             public_config: shared_public_config.clone(),
             sat_packet_log: Arc::clone(&sat_packet_log),
             history: Arc::clone(&history_store),
+            watched_stations: Arc::clone(&watched_stations),
+            store: Arc::clone(&store),
         };
 
         // resolve frontend assets path
@@ -356,6 +389,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .route("/api/config", get(config_handler))
             .route("/api/satellite-packets", get(satellite_packets_handler))
             .route("/api/history", get(history_handler))
+            .route(
+                "/api/watched",
+                get(get_watched_handler).post(post_watched_handler),
+            )
+            .route("/api/watched/{station}", delete(delete_watched_handler))
+            .route("/api/station-packets", get(station_packets_handler))
             .nest_service("/assets", ServeDir::new(&assets_dir))
             .fallback_service(ServeDir::new(frontend_dir).append_index_html_on_directories(true))
             .with_state(app_state);
@@ -500,6 +539,100 @@ async fn history_handler(
         Err(_) => Vec::new(),
     };
     Json(snapshot)
+}
+
+// Request body for POST /api/watched.
+#[derive(serde::Deserialize)]
+struct AddWatched {
+    station: String,
+}
+
+// Query params for GET /api/station-packets.
+#[derive(serde::Deserialize)]
+struct StationQuery {
+    station: String,
+}
+
+// get_watched_handler - the current watched-station set (open monitor tabs), in
+// tab order, used by the frontend to restore tabs on load.
+async fn get_watched_handler(State(watched): State<Arc<RwLock<Vec<String>>>>) -> Json<Vec<String>> {
+    let list = match watched.read() {
+        Ok(g) => g.clone(),
+        Err(_) => Vec::new(),
+    };
+    Json(list)
+}
+
+// post_watched_handler - add a station to the watched set, capped at MAX_WATCHED
+// and persisted so the tab restores on reload. Returns the updated set; replies
+// 409 when full so the frontend can show its "max watched" notice. Idempotent for
+// an already-watched station.
+async fn post_watched_handler(
+    State(watched): State<Arc<RwLock<Vec<String>>>>,
+    State(store): State<Arc<Store>>,
+    Json(body): Json<AddWatched>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let station = body.station.trim().to_string();
+    if station.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let (updated, newly_added) = {
+        let mut list = watched
+            .write()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if list.iter().any(|s| s == &station) {
+            (list.clone(), false)
+        } else if list.len() >= MAX_WATCHED {
+            return Err(StatusCode::CONFLICT);
+        } else {
+            list.push(station.clone());
+            (list.clone(), true)
+        }
+    };
+
+    if newly_added && let Err(e) = store.add_watched_station(&station, &Local::now()) {
+        warn!("Failed to persist watched station {}: {}", station, e);
+    }
+
+    Ok(Json(updated))
+}
+
+// delete_watched_handler - stop watching a station (close its tab). Only removes
+// it from the watched set; the shared rolling packet log is left untouched.
+async fn delete_watched_handler(
+    State(watched): State<Arc<RwLock<Vec<String>>>>,
+    State(store): State<Arc<Store>>,
+    Path(station): Path<String>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    let updated = {
+        let mut list = watched
+            .write()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        list.retain(|s| s != &station);
+        list.clone()
+    };
+
+    if let Err(e) = store.remove_watched_station(&station) {
+        warn!("Failed to remove watched station {}: {}", station, e);
+    }
+
+    Ok(Json(updated))
+}
+
+// station_packets_handler - all stored packets for one source callsign-ssid from
+// the rolling history window, newest-first. Works for any station, watched or not.
+async fn station_packets_handler(
+    State(store): State<Arc<Store>>,
+    Query(q): Query<StationQuery>,
+) -> Json<Vec<RTPPacket>> {
+    let packets = store
+        .load_packets_by_source(&q.station)
+        .unwrap_or_else(|e| {
+            warn!("Failed to load packets for {}: {}", q.station, e);
+            Vec::new()
+        });
+    Json(packets)
 }
 
 // sse_handler
