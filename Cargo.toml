@@ -27,6 +27,8 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 aprs-stream = { git = "https://github.com/deatojef/aprs-stream.git", tag = "v0.2.0" }
 aprs-decode = "0.1"
 gpsd_proto = "1.0.0"
+native_db = "0.8.2"
+native_model = "=0.4.20"
 
 [package.metadata.deb]
 maintainer = "Jeff Deaton <deatojef@yahoo.com>"

@@ -17,6 +17,9 @@ pub enum RtpigateError {
 
     /// Validation errors: coordinate ranges, packet flags, data integrity
     Validation(String),
+
+    /// Persistence errors: native_db open/read/write of the statistics store
+    Db(String),
 }
 
 impl fmt::Display for RtpigateError {
@@ -27,6 +30,7 @@ impl fmt::Display for RtpigateError {
             RtpigateError::Parse(msg) => write!(f, "Parse error: {}", msg),
             RtpigateError::Config(msg) => write!(f, "Config error: {}", msg),
             RtpigateError::Validation(msg) => write!(f, "Validation error: {}", msg),
+            RtpigateError::Db(msg) => write!(f, "Database error: {}", msg),
         }
     }
 }
@@ -55,6 +59,12 @@ impl From<toml::de::Error> for RtpigateError {
 impl From<std::num::ParseIntError> for RtpigateError {
     fn from(err: std::num::ParseIntError) -> Self {
         RtpigateError::Parse(err.to_string())
+    }
+}
+
+impl From<native_db::db_type::Error> for RtpigateError {
+    fn from(err: native_db::db_type::Error) -> Self {
+        RtpigateError::Db(err.to_string())
     }
 }
 

@@ -27,6 +27,7 @@ use crate::config::{
 };
 use crate::error::RtpigateError;
 use crate::igate::{self, APRSQuadratic, AnalogItem, TOCALL, Telemetry};
+use crate::store::{AprsisLifetime, Store};
 use crate::stream::Packet;
 
 /// Builds and writes a position beacon for `loc` to the APRS-IS server. Returns
@@ -98,6 +99,7 @@ pub async fn aprsis_task(
     token: CancellationToken,
     config: Arc<Config>,
     gps_state: Arc<RwLock<Option<GpsFix>>>,
+    store: Arc<Store>,
 ) -> Result<(), RtpigateError> {
     info!("Started");
 
@@ -252,11 +254,29 @@ pub async fn aprsis_task(
     // never beacon faster than `min_beacon_secs`. Harmless when source != Gpsd.
     let mut move_interval = interval(Duration::from_secs(min_beacon_secs));
 
-    // telemetry sequence filename
-    let telemetry_file = "/tmp/telem-seq.txt";
-
-    // sequence number
-    let mut sequence: u32 = igate::read_telemetry_file(telemetry_file).await?;
+    // APRS telemetry sequence number, now persisted in the statistics store. On the
+    // first run after upgrading, migrate the value from the legacy flat file that
+    // used to hold it (/tmp/telem-seq.txt) so the sequence doesn't jump back to 0.
+    let mut sequence: u32 = match store.load_telemetry_seq() {
+        Ok(Some(seq)) => seq,
+        Ok(None) => {
+            const LEGACY_SEQ_FILE: &str = "/tmp/telem-seq.txt";
+            let seq = match tokio::fs::try_exists(LEGACY_SEQ_FILE).await {
+                Ok(true) => igate::read_telemetry_file(LEGACY_SEQ_FILE)
+                    .await
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            if let Err(e) = store.save_telemetry_seq(seq) {
+                warn!("Failed to persist migrated telemetry sequence: {}", e);
+            }
+            seq
+        }
+        Err(e) => {
+            warn!("Failed to load telemetry sequence from store: {}", e);
+            0
+        }
+    };
 
     // duplicate packet suppression: maps "source:info" to the time it was last igated
     let mut dedup_cache: HashMap<String, i64> = HashMap::new();
@@ -266,6 +286,26 @@ pub async fn aprsis_task(
     let mut total_reconnects: u32 = 0;
     let mut reconnects_this_interval: u32 = 0;
     let mut first_connect = true;
+
+    // Seed lifetime igating counters from the store so a restart resumes prior
+    // totals instead of counting from zero.
+    match store.load_aprsis_lifetime() {
+        Ok(al) => {
+            lifetime_rf_received = al.rf_received;
+            lifetime_packets_igated = al.packets_igated;
+            lifetime_packets_dropped = al.packets_dropped;
+            total_reconnects = al.reconnects as u32;
+            lifetime_drops_stale = al.drops_stale;
+            lifetime_drops_rfonly = al.drops_rfonly;
+            lifetime_drops_query = al.drops_query;
+            lifetime_drops_thirdparty = al.drops_thirdparty;
+            lifetime_drops_sat = al.drops_sat;
+            lifetime_drops_duplicate = al.drops_duplicate;
+            lifetime_drops_malformed = al.drops_malformed;
+            lifetime_lagged_drops = al.lagged_drops;
+        }
+        Err(e) => warn!("Failed to load aprsis lifetime counters: {}", e),
+    }
 
     // backoff state for reconnection
     let mut backoff_secs: u64 = 5;
@@ -487,6 +527,23 @@ pub async fn aprsis_task(
                     packets_igated = 0;
                     stats_rf_received = 0;
                     reconnects_this_interval = 0;
+
+                    // Persist the lifetime igating counters for this interval.
+                    persist_aprsis_lifetime(&store, AprsisLifetime {
+                        id: 0,
+                        rf_received: lifetime_rf_received,
+                        packets_igated: lifetime_packets_igated,
+                        packets_dropped: lifetime_packets_dropped,
+                        reconnects: total_reconnects as u64,
+                        drops_stale: lifetime_drops_stale,
+                        drops_rfonly: lifetime_drops_rfonly,
+                        drops_query: lifetime_drops_query,
+                        drops_thirdparty: lifetime_drops_thirdparty,
+                        drops_sat: lifetime_drops_sat,
+                        drops_duplicate: lifetime_drops_duplicate,
+                        drops_malformed: lifetime_drops_malformed,
+                        lagged_drops: lifetime_lagged_drops,
+                    });
                 },
 
                 // read from APRS-IS server (consume data to detect EOF/errors)
@@ -723,8 +780,10 @@ pub async fn aprsis_task(
                         // increment the sequence number
                         sequence += 1;
 
-                        // save the sequence to a file
-                        sequence = igate::write_telemetry_seq(telemetry_file, sequence).await?;
+                        // persist the sequence to the store so it survives a restart
+                        if let Err(e) = store.save_telemetry_seq(sequence) {
+                            warn!("Failed to persist telemetry sequence: {}", e);
+                        }
 
                         // clear stats
                         rf_received = 0;
@@ -765,9 +824,38 @@ pub async fn aprsis_task(
         } // inner loop
     } // outer loop
 
+    // Final flush on shutdown: persist the lifetime counters and the latest
+    // telemetry sequence so a graceful stop loses nothing since the last tick.
+    persist_aprsis_lifetime(&store, AprsisLifetime {
+        id: 0,
+        rf_received: lifetime_rf_received,
+        packets_igated: lifetime_packets_igated,
+        packets_dropped: lifetime_packets_dropped,
+        reconnects: total_reconnects as u64,
+        drops_stale: lifetime_drops_stale,
+        drops_rfonly: lifetime_drops_rfonly,
+        drops_query: lifetime_drops_query,
+        drops_thirdparty: lifetime_drops_thirdparty,
+        drops_sat: lifetime_drops_sat,
+        drops_duplicate: lifetime_drops_duplicate,
+        drops_malformed: lifetime_drops_malformed,
+        lagged_drops: lifetime_lagged_drops,
+    });
+    if let Err(e) = store.save_telemetry_seq(sequence) {
+        warn!("Failed to persist telemetry sequence on shutdown: {}", e);
+    }
+
     info!("Task ended.");
 
     Ok(())
+}
+
+// Persist the aprsis lifetime counters, logging (but not propagating) any failure
+// so a transient DB error never tears down the APRS-IS task.
+fn persist_aprsis_lifetime(store: &Store, rec: AprsisLifetime) {
+    if let Err(e) = store.save_aprsis_lifetime(&rec) {
+        warn!("Failed to persist aprsis lifetime counters: {}", e);
+    }
 }
 
 /// Using the open socket and bufreader stream, attempt to log into the APRS-IS server.

@@ -17,6 +17,16 @@ if ! grep -q '\[http\]' /etc/rtpigate/config.toml 2>/dev/null; then
     echo 'frontend = "/usr/local/share/rtpigate/frontend"' >> /etc/rtpigate/config.toml
 fi
 
+# Ensure the [storage] section points at the persistent state directory. The
+# systemd unit's StateDirectory=rtpigate creates and owns /var/lib/rtpigate at
+# runtime; also create it now so a foreground run works before first service start.
+install -d -o rtpigate -g rtpigate -m 0700 /var/lib/rtpigate
+if ! grep -q '\[storage\]' /etc/rtpigate/config.toml 2>/dev/null; then
+    echo "" >> /etc/rtpigate/config.toml
+    echo "[storage]" >> /etc/rtpigate/config.toml
+    echo 'path = "/var/lib/rtpigate/rtpigate.db"' >> /etc/rtpigate/config.toml
+fi
+
 echo ""
 echo "rtpigate installed successfully."
 echo ""

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     net::Ipv4Addr,
     sync::Arc,
@@ -24,6 +24,7 @@ use crate::config::{
     SlicerInterval, SlicerTelemetry, StationEntry, StationTelemetry,
 };
 use crate::error::RtpigateError;
+use crate::store::{Store, sat_packet_key};
 
 // Classify a slicer's space-gain into a twist zone, mirroring the frontend's
 // slicerZone(): gain < 0.8 compensates a loud space (pre-emphasis), gain > 1.25
@@ -236,6 +237,7 @@ pub async fn rtp_listener(
     token: CancellationToken,
     config: Arc<Config>,
     sat_packet_log: Arc<std::sync::RwLock<VecDeque<RTPPacket>>>,
+    store: Arc<Store>,
 ) -> Result<(), RtpigateError> {
     info!("Started");
 
@@ -298,6 +300,49 @@ pub async fn rtp_listener(
     let mut slicer_interval: Vec<u32> = Vec::new();
     let mut slicer_history: VecDeque<SlicerInterval> = VecDeque::new();
     let mut lifetime_slicer_hits: Vec<u64> = Vec::new();
+
+    //#################
+    // Seed the task-local statistics from the persistent store so a restart resumes
+    // with prior counts. Geometry-free slicer accumulators are held aside and
+    // applied once the wire reveals the (possibly changed) slicer bank size.
+    //#################
+    match store.load_packet_lifetime() {
+        Ok(pl) => {
+            lifetime_total_packets = pl.total;
+            lifetime_heard_direct = pl.heard_direct;
+            lifetime_digipeated = pl.digipeated;
+        }
+        Err(e) => warn!("Failed to load packet lifetime counters: {}", e),
+    }
+    match store.load_stations() {
+        Ok(list) => {
+            for s in list {
+                station_map.insert(s.callsign.clone(), s);
+            }
+            info!("Restored {} station(s) from store", station_map.len());
+        }
+        Err(e) => warn!("Failed to load stations from store: {}", e),
+    }
+    match store.load_freqs() {
+        Ok(list) => {
+            for (freq, count, last_heard) in list {
+                freq_counts.insert(freq, (count, last_heard));
+            }
+        }
+        Err(e) => warn!("Failed to load frequency counts from store: {}", e),
+    }
+    let mut restored_slicer = match store.load_slicer() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to load slicer state from store: {}", e);
+            None
+        }
+    };
+
+    // Keys mutated since the last persistence flush, so the tick upserts only the
+    // stations/frequencies that actually changed rather than the whole map.
+    let mut dirty_stations: HashSet<String> = HashSet::new();
+    let mut dirty_freqs: HashSet<String> = HashSet::new();
 
     // the interval for when to send statistics
     let mut time_interval = interval(Duration::from_secs(15));
@@ -418,25 +463,45 @@ pub async fn rtp_listener(
                         warn!("Failed to send slicer statistics to channel: {}", e);
                     }
 
-                    // Evict stations not heard in the last 36 hours
+                    // Evict stations not heard in the last 36 hours, capturing the
+                    // evicted keys so their rows can be removed from the store.
                     let evict_threshold = chrono::Duration::hours(36);
                     let now = Local::now();
-                    station_map.retain(|_, entry| now - entry.last_heard < evict_threshold);
+                    let mut evicted_stations: Vec<String> = Vec::new();
+                    station_map.retain(|k, entry| {
+                        let keep = now - entry.last_heard < evict_threshold;
+                        if !keep {
+                            evicted_stations.push(k.clone());
+                        }
+                        keep
+                    });
 
-                    // Prune the satellite packet log of entries older than 24 hours.
+                    // Prune the satellite packet log of entries older than 24 hours,
+                    // capturing the removed keys for the store.
                     let sat_log_threshold = chrono::Duration::hours(24);
+                    let mut pruned_sat_keys: Vec<i64> = Vec::new();
                     if let Ok(mut log) = sat_packet_log.write() {
                         while let Some(front) = log.front() {
                             if now - front.receivetime > sat_log_threshold {
-                                log.pop_front();
+                                if let Some(p) = log.pop_front() {
+                                    pruned_sat_keys.push(sat_packet_key(&p));
+                                }
                             } else {
                                 break;
                             }
                         }
                     }
-                    // Prune frequencies not heard in the last 24 hours
+                    // Prune frequencies not heard in the last 24 hours, capturing the
+                    // evicted keys for the store.
                     let freq_threshold = chrono::Duration::hours(24);
-                    freq_counts.retain(|_, (_, last_heard)| now - *last_heard < freq_threshold);
+                    let mut evicted_freqs: Vec<String> = Vec::new();
+                    freq_counts.retain(|k, (_, last_heard)| {
+                        let keep = now - *last_heard < freq_threshold;
+                        if !keep {
+                            evicted_freqs.push(k.clone());
+                        }
+                        keep
+                    });
 
                     // Emit station statistics
                     let mut stations: Vec<StationEntry> = station_map.values().cloned().collect();
@@ -466,6 +531,59 @@ pub async fn rtp_listener(
                         *c = 0;
                     }
 
+                    //#################
+                    // Persist this interval's state to the store. Failures are
+                    // logged but non-fatal — the in-memory state stays authoritative
+                    // and the next tick retries.
+                    //#################
+                    persist_packet_lifetime(
+                        &store,
+                        lifetime_total_packets,
+                        lifetime_heard_direct,
+                        lifetime_digipeated,
+                        lifetime_decode_errors,
+                    );
+                    if slicer_count > 0
+                        && let Err(e) = store.save_slicer(
+                            slicer_count,
+                            &slicer_gains,
+                            &lifetime_slicer_hits,
+                            slicer_history.make_contiguous(),
+                        )
+                    {
+                        warn!("Failed to persist slicer state: {}", e);
+                    }
+                    // Remove evicted rows first, then upsert the still-present dirty
+                    // rows (an evicted key won't also be dirty this interval).
+                    for k in &evicted_stations {
+                        dirty_stations.remove(k);
+                        if let Err(e) = store.delete_station(k) {
+                            warn!("Failed to delete evicted station {}: {}", k, e);
+                        }
+                    }
+                    for k in &evicted_freqs {
+                        dirty_freqs.remove(k);
+                        if let Err(e) = store.delete_freq(k) {
+                            warn!("Failed to delete evicted frequency {}: {}", k, e);
+                        }
+                    }
+                    for k in dirty_stations.drain() {
+                        if let Some(entry) = station_map.get(&k)
+                            && let Err(e) = store.upsert_station(entry)
+                        {
+                            warn!("Failed to persist station {}: {}", k, e);
+                        }
+                    }
+                    for k in dirty_freqs.drain() {
+                        if let Some((count, last_heard)) = freq_counts.get(&k)
+                            && let Err(e) = store.upsert_freq(&k, *count, last_heard)
+                        {
+                            warn!("Failed to persist frequency {}: {}", k, e);
+                        }
+                    }
+                    if let Err(e) = store.delete_sat_packets(&pruned_sat_keys) {
+                        warn!("Failed to delete pruned satellite packets: {}", e);
+                    }
                 },
 
 
@@ -488,7 +606,28 @@ pub async fn rtp_listener(
                                 slicer_zones = g.iter().map(|x| slicer_zone(*x)).collect();
                                 slicer_db = g.iter().map(|x| 20.0 * x.log10()).collect();
                                 slicer_interval = vec![0; slicer_count];
-                                lifetime_slicer_hits = vec![0; slicer_count];
+
+                                // Apply the restored slicer accumulators only when
+                                // they match the live bank size. A different length
+                                // means the producer's slicer bank changed while we
+                                // were down, so the slicer identities no longer line
+                                // up — start fresh in that case.
+                                match restored_slicer.take() {
+                                    Some(r) if r.lifetime_hits.len() == slicer_count => {
+                                        lifetime_slicer_hits = r.lifetime_hits;
+                                        slicer_history = r.history.into();
+                                        info!("Restored slicer statistics ({} slicers)", slicer_count);
+                                    }
+                                    Some(_) => {
+                                        warn!(
+                                            "Slicer bank size changed since last run; resetting slicer statistics"
+                                        );
+                                        lifetime_slicer_hits = vec![0; slicer_count];
+                                    }
+                                    None => {
+                                        lifetime_slicer_hits = vec![0; slicer_count];
+                                    }
+                                }
                             }
 
                             // map the stream frame into our internal RTPPacket. A
@@ -550,12 +689,14 @@ pub async fn rtp_listener(
 
                             // update station tracking
                             let freq_key = format!("{:.3}", p.frequency);
+                            dirty_freqs.insert(freq_key.clone());
                             let freq_entry = freq_counts.entry(freq_key).or_insert((0, p.receivetime));
                             freq_entry.0 += 1;
                             freq_entry.1 = p.receivetime;
 
                             // use object/item name as station key if present
                             let station_key = p.object_name.clone().unwrap_or_else(|| p.source.clone());
+                            dirty_stations.insert(station_key.clone());
                             let transmitted_by = p.object_name.as_ref().map(|_| p.source.clone());
 
                             let entry = station_map.entry(station_key.clone()).or_insert_with(|| StationEntry {
@@ -613,11 +754,15 @@ pub async fn rtp_listener(
                             debug!("{:3.3}MHz Direct: {}  {}", p.frequency, p.heard_direct as u32, p.raw);
 
                             // append to the 24h satellite packet log (newest-first
-                            // ordering is maintained at read time).
-                            if p.is_satellite
-                                && let Ok(mut log) = sat_packet_log.write()
-                            {
-                                log.push_back(p.clone());
+                            // ordering is maintained at read time) and persist it so
+                            // the log survives a restart.
+                            if p.is_satellite {
+                                if let Ok(mut log) = sat_packet_log.write() {
+                                    log.push_back(p.clone());
+                                }
+                                if let Err(e) = store.insert_sat_packet(&p) {
+                                    warn!("Failed to persist satellite packet: {}", e);
+                                }
                             }
 
                             // attempt to send this packet to the channel so downstream
@@ -643,12 +788,70 @@ pub async fn rtp_listener(
         } // inner loop
     } // outer reconnection loop
 
+    //#################
+    // Final flush on shutdown: persist the lifetime counters, slicer state, and any
+    // stations/frequencies touched since the last tick so a graceful stop loses
+    // nothing. Evictions were already mirrored on the last tick.
+    //#################
+    persist_packet_lifetime(
+        &store,
+        lifetime_total_packets,
+        lifetime_heard_direct,
+        lifetime_digipeated,
+        lifetime_decode_errors,
+    );
+    if slicer_count > 0
+        && let Err(e) = store.save_slicer(
+            slicer_count,
+            &slicer_gains,
+            &lifetime_slicer_hits,
+            slicer_history.make_contiguous(),
+        )
+    {
+        warn!("Failed to persist slicer state on shutdown: {}", e);
+    }
+    for k in dirty_stations.drain() {
+        if let Some(entry) = station_map.get(&k)
+            && let Err(e) = store.upsert_station(entry)
+        {
+            warn!("Failed to persist station {} on shutdown: {}", k, e);
+        }
+    }
+    for k in dirty_freqs.drain() {
+        if let Some((count, last_heard)) = freq_counts.get(&k)
+            && let Err(e) = store.upsert_freq(&k, *count, last_heard)
+        {
+            warn!("Failed to persist frequency {} on shutdown: {}", k, e);
+        }
+    }
+
     // drop the channel
     drop(data_channel);
 
     info!("Task ended.");
 
     Ok(())
+}
+
+// Persist the rtp_listener lifetime counters to the store, logging (but not
+// propagating) any failure so a transient DB error never kills the listener.
+fn persist_packet_lifetime(
+    store: &Store,
+    total: u64,
+    heard_direct: u64,
+    digipeated: u64,
+    decode_errors: u64,
+) {
+    let rec = crate::store::PacketLifetime {
+        id: 0,
+        total,
+        heard_direct,
+        digipeated,
+        decode_errors,
+    };
+    if let Err(e) = store.save_packet_lifetime(&rec) {
+        warn!("Failed to persist packet lifetime counters: {}", e);
+    }
 }
 
 // A mapped RTPPacket together with the APRS symbol table/code parsed from the

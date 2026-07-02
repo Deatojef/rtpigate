@@ -73,6 +73,7 @@ fn make_config(callsign: &str, passcode: &str) -> Config {
         satellite: None,
         http: None,
         gpsd: None,
+        storage: None,
     }
 }
 

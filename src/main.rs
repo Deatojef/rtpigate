@@ -42,6 +42,9 @@ mod igate;
 mod history;
 use history::{HistoryStore, StatBucket};
 
+mod store;
+use store::Store;
+
 mod sse;
 use sse::{SSEEvent, sse_task};
 
@@ -156,6 +159,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //-------------- end:  reading configuration -------
 
+    //#################
+    // open the persistent statistics store (native_db). Shared across the
+    // rtp_listener, aprsis, and sse tasks so each can seed its counters at startup
+    // and flush them on its telemetry tick / on shutdown.
+    //#################
+    let store = match Store::open(&shared_config.storage_path()) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            error!(
+                "Unable to open statistics store at {}: {}",
+                shared_config.storage_path(),
+                e
+            );
+            std::process::exit(1);
+        }
+    };
+    info!("Statistics store: {}", shared_config.storage_path());
+
     // create a JoinSet to collect the handles from tasks being started
     let mut task_set = JoinSet::new();
 
@@ -178,15 +199,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //#################
     // 24h rolling log of satellite packets, shared between the RTP listener (writer)
-    // and the /api/satellite-packets HTTP handler (reader).
+    // and the /api/satellite-packets HTTP handler (reader). Seeded from the store,
+    // then pruned so anything that expired while we were down is dropped.
     //#################
-    let sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>> = Arc::new(RwLock::new(VecDeque::new()));
+    let sat_packet_log: Arc<RwLock<VecDeque<RTPPacket>>> = {
+        let restored = store.load_sat_packets().unwrap_or_else(|e| {
+            warn!("Failed to load satellite packets from store: {}", e);
+            Vec::new()
+        });
+        Arc::new(RwLock::new(VecDeque::from(restored)))
+    };
 
     //#################
     // 24h rolling history of merged packet/igating statistics, written by sse_task
-    // and read by the /api/history HTTP handler.
+    // and read by the /api/history HTTP handler. Seeded from the store, then pruned.
     //#################
-    let history_store: Arc<RwLock<HistoryStore>> = Arc::new(RwLock::new(HistoryStore::new()));
+    let history_store: Arc<RwLock<HistoryStore>> = {
+        let restored = store.load_buckets().unwrap_or_else(|e| {
+            warn!("Failed to load history buckets from store: {}", e);
+            Vec::new()
+        });
+        let mut hs = HistoryStore::from_buckets(restored);
+        let pruned = hs.prune();
+        if let Err(e) = store.delete_buckets(&pruned) {
+            warn!("Failed to delete expired history buckets on load: {}", e);
+        }
+        Arc::new(RwLock::new(hs))
+    };
 
     //#################
     // latest GPS fix from gpsd, written by gpsd_task and read by aprsis_task to
@@ -201,9 +240,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rtp_config = Arc::clone(&shared_config);
     let rtp_token = cancel_token.clone();
     let rtp_sat_log = Arc::clone(&sat_packet_log);
+    let rtp_store = Arc::clone(&store);
 
     task_set.spawn(async move {
-        if let Err(e) = rtp_listener(rtp_tx_sender, rtp_token, rtp_config, rtp_sat_log).await {
+        if let Err(e) =
+            rtp_listener(rtp_tx_sender, rtp_token, rtp_config, rtp_sat_log, rtp_store).await
+        {
             error!("Unable to create RTP listener task: {}", e);
         }
     });
@@ -218,6 +260,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let aprsis_config = Arc::clone(&shared_config);
         let aprsis_token = cancel_token.clone();
         let aprsis_gps_state = Arc::clone(&gps_state);
+        let aprsis_store = Arc::clone(&store);
 
         task_set.spawn(async move {
             if let Err(e) = aprsis_task(
@@ -225,6 +268,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 aprsis_token,
                 aprsis_config,
                 aprsis_gps_state,
+                aprsis_store,
             )
             .await
             {
@@ -262,6 +306,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sse_config = Arc::clone(&shared_config);
     let sse_token = cancel_token.clone();
     let sse_history = Arc::clone(&history_store);
+    let sse_store = Arc::clone(&store);
 
     task_set.spawn(async move {
         if let Err(e) = sse_task(
@@ -270,6 +315,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             sse_token,
             sse_config,
             sse_history,
+            sse_store,
         )
         .await
         {
@@ -405,8 +451,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // signal to all tasks that it's time to shutdown
     cancel_token.cancel();
 
-    // wait for all tasks to finish
+    // wait for all tasks to finish (each flushes its own counters on cancellation)
     task_set.join_all().await;
+
+    // Backstop: persist the full history snapshot once the tasks have drained, in
+    // case the last incremental flush in sse_task was missed. The per-task lifetime
+    // counters, stations, slicer state, and satellite log were flushed by their own
+    // tasks on cancellation above.
+    {
+        let snapshot = history_store
+            .read()
+            .map(|h| h.snapshot())
+            .unwrap_or_default();
+        if let Err(e) = store.upsert_buckets(&snapshot) {
+            warn!("Failed to flush history on shutdown: {}", e);
+        }
+    }
 
     info!("Done.");
     Ok(())

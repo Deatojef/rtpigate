@@ -199,6 +199,7 @@ pub struct Config {
     pub satellite: Option<SatelliteConfig>,
     pub http: Option<HttpConfig>,
     pub gpsd: Option<GpsdConfig>,
+    pub storage: Option<StorageConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -329,6 +330,19 @@ pub struct SatelliteConfig {
     pub frequencies: Option<Vec<f64>>,
 }
 
+/// Where the persistent statistics database (native_db) lives on disk. When the
+/// `[storage]` section is omitted the store defaults to `./rtpigate.db` in the
+/// working directory (dev), while the packaged service points it at
+/// `/var/lib/rtpigate/rtpigate.db`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct StorageConfig {
+    pub path: Option<String>,
+}
+
+impl StorageConfig {
+    pub const DEFAULT_PATH: &'static str = "./rtpigate.db";
+}
+
 /// Sanitized APRS-IS config for the frontend (passcode omitted)
 #[derive(Serialize, Debug, Clone)]
 pub struct AprsisConfigPublic {
@@ -411,6 +425,16 @@ impl Config {
             .as_ref()
             .and_then(|s| s.frequencies.clone())
             .unwrap_or_else(|| vec![145.825])
+    }
+
+    /// Returns the configured native_db statistics-store path, defaulting to
+    /// `./rtpigate.db` when the `[storage]` section (or its `path`) is omitted.
+    pub fn storage_path(&self) -> String {
+        self.storage
+            .as_ref()
+            .and_then(|s| s.path.clone())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| StorageConfig::DEFAULT_PATH.to_string())
     }
 }
 
@@ -523,6 +547,19 @@ impl Config {
             {
                 errors.push("[gpsd] min_beacon_secs must be > 0".into());
             }
+        }
+
+        // Storage path validation — the parent directory must exist (or be the
+        // current directory) so native_db can create the database file there.
+        let storage_path = self.storage_path();
+        if let Some(parent) = std::path::Path::new(&storage_path).parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            errors.push(format!(
+                "[storage] path parent directory '{}' does not exist",
+                parent.display()
+            ));
         }
 
         // HTTP listen address validation

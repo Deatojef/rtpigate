@@ -25,6 +25,10 @@ target
 
 /target
 
+# native_db statistics store (dev default is ./rtpigate.db in the cwd)
+/rtpigate.db
+/rtpigate.db.*
+
 
 # ignore vendor directories (e.g. the Rust vendored crate fork)
 vendor

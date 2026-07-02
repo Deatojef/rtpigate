@@ -120,6 +120,21 @@ min_beacon_secs = 30
 
 
 ###########################################
+# The [storage] section selects where the persistent statistics database
+# (native_db) lives on disk. Statistics — lifetime counters, the 24h activity
+# history, the heard-station and frequency lists, the slicer distribution, the 24h
+# satellite log, and the APRS telemetry sequence number — are snapshotted here on
+# each ~15s tick and on shutdown, so they survive a restart.
+#
+# When omitted, the store defaults to ./rtpigate.db in the working directory (dev).
+# The packaged service points this at /var/lib/rtpigate/rtpigate.db (added to
+# /etc/rtpigate/config.toml on install).
+###########################################
+# [storage]
+# path = "./rtpigate.db"
+
+
+###########################################
 # The [satellite] section lists frequencies (MHz) considered satellite downlinks.
 # Packets on these frequencies are gated only when digipeated or from a known satellite.
 ###########################################

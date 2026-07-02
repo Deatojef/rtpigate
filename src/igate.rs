@@ -254,7 +254,10 @@ pub fn positpacket(
 
 // ---- Telemetry ----
 
-/// Read the telemetry sequence file and return the sequence integer contained within.
+/// Read the legacy telemetry sequence file and return the sequence integer it
+/// contains. The sequence number now lives in the native_db statistics store; this
+/// is retained only to migrate the value off the old `/tmp/telem-seq.txt` file on
+/// the first run after upgrading (see `aprsis_task`).
 pub async fn read_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -286,12 +289,6 @@ pub async fn read_telemetry_file(filename: &str) -> Result<u32, RtpigateError> {
 
     let number = first_line.trim().parse::<u32>()?;
     Ok(number)
-}
-
-/// Write the provided sequence number to the filename provided.
-pub async fn write_telemetry_seq(filename: &str, seq: u32) -> Result<u32, RtpigateError> {
-    fs::write(filename, format!("{}\n", seq)).await?;
-    Ok(seq)
 }
 
 /// Create a telemetry file using the filename provided.

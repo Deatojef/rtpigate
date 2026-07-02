@@ -23,5 +23,10 @@ ProtectHome=true
 ReadWritePaths=/tmp
 PrivateTmp=true
 
+# Persistent statistics store (native_db). StateDirectory creates and owns
+# /var/lib/rtpigate (mode 0700, User/Group above) and grants read-write access
+# under ProtectSystem=strict. The config's [storage] path points here.
+StateDirectory=rtpigate
+
 [Install]
 WantedBy=multi-user.target

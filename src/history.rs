@@ -52,6 +52,15 @@ impl HistoryStore {
         }
     }
 
+    /// Rebuild a store from persisted buckets (used to seed from the database at
+    /// startup). Callers should `prune()` afterwards to drop anything that expired
+    /// while the process was down.
+    pub fn from_buckets(buckets: Vec<StatBucket>) -> Self {
+        Self {
+            buckets: buckets.into_iter().map(|b| (b.ts, b)).collect(),
+        }
+    }
+
     /// Floor an epoch second to the bucket boundary.
     fn bucket_key(epoch_secs: i64) -> i64 {
         epoch_secs - epoch_secs.rem_euclid(BUCKET_SECS)
@@ -61,7 +70,7 @@ impl HistoryStore {
     /// `set` to write the owned field. Iterating the whole series (rather than
     /// just the newest point) self-heals any tick we missed while no telemetry
     /// was flowing.
-    fn merge_series<F>(&mut self, series: &DataSeries<u32>, set: F)
+    fn merge_series<F>(&mut self, series: &DataSeries<u32>, touched: &mut Vec<i64>, set: F)
     where
         F: Fn(&mut StatBucket, u32),
     {
@@ -72,30 +81,57 @@ impl HistoryStore {
                 ..Default::default()
             });
             set(bucket, *value);
+            touched.push(key);
         }
     }
 
-    /// Merge the stream-side counts (total / direct / digipeated / errors).
-    pub fn update_from_packet(&mut self, t: &PacketTelemetry) {
-        self.merge_series(&t.total_packets, |b, v| b.total = v);
-        self.merge_series(&t.heard_direct, |b, v| b.direct = v);
-        self.merge_series(&t.digipeated, |b, v| b.digipeated = v);
-        self.merge_series(&t.decode_errors, |b, v| b.errors = v);
+    /// Merge the stream-side counts (total / direct / digipeated / errors),
+    /// returning the deduped bucket keys touched so the caller can persist them.
+    pub fn update_from_packet(&mut self, t: &PacketTelemetry) -> Vec<i64> {
+        let mut touched = Vec::new();
+        self.merge_series(&t.total_packets, &mut touched, |b, v| b.total = v);
+        self.merge_series(&t.heard_direct, &mut touched, |b, v| b.direct = v);
+        self.merge_series(&t.digipeated, &mut touched, |b, v| b.digipeated = v);
+        self.merge_series(&t.decode_errors, &mut touched, |b, v| b.errors = v);
+        touched.sort_unstable();
+        touched.dedup();
+        touched
     }
 
-    /// Merge the APRS-IS-side counts (igated / dropped / rf_received / reconnects).
-    pub fn update_from_aprsis(&mut self, t: &AprsisTelemetry) {
-        self.merge_series(&t.packets_igated, |b, v| b.igated = v);
-        self.merge_series(&t.packets_dropped, |b, v| b.dropped = v);
-        self.merge_series(&t.rf_received, |b, v| b.rf_received = v);
-        self.merge_series(&t.reconnects, |b, v| b.reconnects = v);
+    /// Merge the APRS-IS-side counts (igated / dropped / rf_received / reconnects),
+    /// returning the deduped bucket keys touched so the caller can persist them.
+    pub fn update_from_aprsis(&mut self, t: &AprsisTelemetry) -> Vec<i64> {
+        let mut touched = Vec::new();
+        self.merge_series(&t.packets_igated, &mut touched, |b, v| b.igated = v);
+        self.merge_series(&t.packets_dropped, &mut touched, |b, v| b.dropped = v);
+        self.merge_series(&t.rf_received, &mut touched, |b, v| b.rf_received = v);
+        self.merge_series(&t.reconnects, &mut touched, |b, v| b.reconnects = v);
+        touched.sort_unstable();
+        touched.dedup();
+        touched
     }
 
-    /// Drop buckets older than the retention window.
-    pub fn prune(&mut self) {
+    /// Clone the buckets for a set of keys (used to persist the just-touched keys).
+    pub fn buckets_for(&self, keys: &[i64]) -> Vec<StatBucket> {
+        keys.iter()
+            .filter_map(|k| self.buckets.get(k).cloned())
+            .collect()
+    }
+
+    /// Drop buckets older than the retention window, returning the keys removed so
+    /// the caller can mirror the deletions to the persistent store.
+    pub fn prune(&mut self) -> Vec<i64> {
         let cutoff = Self::bucket_key(Local::now().timestamp()) - RETENTION_SECS;
-        // Retain only buckets at or after the cutoff.
-        self.buckets.retain(|&ts, _| ts >= cutoff);
+        // Collect keys below the cutoff, then remove them.
+        let removed: Vec<i64> = self
+            .buckets
+            .range(..cutoff)
+            .map(|(&ts, _)| ts)
+            .collect();
+        for ts in &removed {
+            self.buckets.remove(ts);
+        }
+        removed
     }
 
     /// Oldest-first snapshot of all buckets, for the `/api/history` endpoint.

@@ -8,7 +8,8 @@ use log::{debug, info, warn};
 
 use crate::config::{AppTelemetry, Config, DataItem};
 use crate::error::RtpigateError;
-use crate::history::HistoryStore;
+use crate::history::{HistoryStore, StatBucket};
+use crate::store::Store;
 use crate::stream::Packet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub async fn sse_task(
     token: CancellationToken,
     _config: Arc<Config>,
     history: Arc<RwLock<HistoryStore>>,
+    store: Arc<Store>,
 ) -> Result<(), RtpigateError> {
     info!("Started");
 
@@ -52,11 +54,17 @@ pub async fn sse_task(
                     Ok(DataItem::Tlm(telemetry)) => {
                         match telemetry {
                             AppTelemetry::PacketStatus(telem) => {
-                                // feed the rolling history store before forwarding
-                                if let Ok(mut store) = history.write() {
-                                    store.update_from_packet(&telem);
-                                    store.prune();
-                                }
+                                // feed the rolling history store before forwarding,
+                                // then mirror the touched/pruned buckets to disk.
+                                let (touched, pruned) = match history.write() {
+                                    Ok(mut hist) => {
+                                        let touched = hist.update_from_packet(&telem);
+                                        let pruned = hist.prune();
+                                        (hist.buckets_for(&touched), pruned)
+                                    }
+                                    Err(_) => (Vec::new(), Vec::new()),
+                                };
+                                persist_history(&store, &touched, &pruned);
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
                                 if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
@@ -64,11 +72,17 @@ pub async fn sse_task(
                                 }
                             },
                             AppTelemetry::AprsisStatus(telem) => {
-                                // feed the rolling history store before forwarding
-                                if let Ok(mut store) = history.write() {
-                                    store.update_from_aprsis(&telem);
-                                    store.prune();
-                                }
+                                // feed the rolling history store before forwarding,
+                                // then mirror the touched/pruned buckets to disk.
+                                let (touched, pruned) = match history.write() {
+                                    Ok(mut hist) => {
+                                        let touched = hist.update_from_aprsis(&telem);
+                                        let pruned = hist.prune();
+                                        (hist.buckets_for(&touched), pruned)
+                                    }
+                                    Err(_) => (Vec::new(), Vec::new()),
+                                };
+                                persist_history(&store, &touched, &pruned);
                                 let key = telem.name.clone();
                                 let thejson = json!(telem);
                                 if sse_channel.send(SSEEvent { event: key, data: thejson }).is_err() {
@@ -112,4 +126,16 @@ pub async fn sse_task(
 
     info!("Task ended.");
     Ok(())
+}
+
+// Mirror the just-merged history buckets to the persistent store. Persistence
+// failures are logged but never fatal — the in-memory store remains authoritative
+// for live reads, and the next tick retries.
+fn persist_history(store: &Store, touched: &[StatBucket], pruned: &[i64]) {
+    if let Err(e) = store.upsert_buckets(touched) {
+        warn!("Failed to persist history buckets: {}", e);
+    }
+    if let Err(e) = store.delete_buckets(pruned) {
+        warn!("Failed to delete pruned history buckets: {}", e);
+    }
 }
