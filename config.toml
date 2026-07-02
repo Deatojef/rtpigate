@@ -132,6 +132,7 @@ min_beacon_secs = 30
 ###########################################
 # [storage]
 # path = "./rtpigate.db"
+path = "/var/lib/rtpigate/rtpigate.db"
 
 
 ###########################################
