@@ -130,7 +130,7 @@ min_beacon_secs = 30
 # The packaged service points this at /var/lib/rtpigate/rtpigate.db (added to
 # /etc/rtpigate/config.toml on install).
 ###########################################
-# [storage]
+[storage]
 # path = "./rtpigate.db"
 path = "/var/lib/rtpigate/rtpigate.db"
 
