@@ -826,21 +826,24 @@ pub async fn aprsis_task(
 
     // Final flush on shutdown: persist the lifetime counters and the latest
     // telemetry sequence so a graceful stop loses nothing since the last tick.
-    persist_aprsis_lifetime(&store, AprsisLifetime {
-        id: 0,
-        rf_received: lifetime_rf_received,
-        packets_igated: lifetime_packets_igated,
-        packets_dropped: lifetime_packets_dropped,
-        reconnects: total_reconnects as u64,
-        drops_stale: lifetime_drops_stale,
-        drops_rfonly: lifetime_drops_rfonly,
-        drops_query: lifetime_drops_query,
-        drops_thirdparty: lifetime_drops_thirdparty,
-        drops_sat: lifetime_drops_sat,
-        drops_duplicate: lifetime_drops_duplicate,
-        drops_malformed: lifetime_drops_malformed,
-        lagged_drops: lifetime_lagged_drops,
-    });
+    persist_aprsis_lifetime(
+        &store,
+        AprsisLifetime {
+            id: 0,
+            rf_received: lifetime_rf_received,
+            packets_igated: lifetime_packets_igated,
+            packets_dropped: lifetime_packets_dropped,
+            reconnects: total_reconnects as u64,
+            drops_stale: lifetime_drops_stale,
+            drops_rfonly: lifetime_drops_rfonly,
+            drops_query: lifetime_drops_query,
+            drops_thirdparty: lifetime_drops_thirdparty,
+            drops_sat: lifetime_drops_sat,
+            drops_duplicate: lifetime_drops_duplicate,
+            drops_malformed: lifetime_drops_malformed,
+            lagged_drops: lifetime_lagged_drops,
+        },
+    );
     if let Err(e) = store.save_telemetry_seq(sequence) {
         warn!("Failed to persist telemetry sequence on shutdown: {}", e);
     }

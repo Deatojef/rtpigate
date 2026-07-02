@@ -123,11 +123,7 @@ impl HistoryStore {
     pub fn prune(&mut self) -> Vec<i64> {
         let cutoff = Self::bucket_key(Local::now().timestamp()) - RETENTION_SECS;
         // Collect keys below the cutoff, then remove them.
-        let removed: Vec<i64> = self
-            .buckets
-            .range(..cutoff)
-            .map(|(&ts, _)| ts)
-            .collect();
+        let removed: Vec<i64> = self.buckets.range(..cutoff).map(|(&ts, _)| ts).collect();
         for ts in &removed {
             self.buckets.remove(ts);
         }

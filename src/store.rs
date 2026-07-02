@@ -453,10 +453,7 @@ impl Store {
 
     pub fn save_telemetry_seq(&self, seq: u32) -> Result<(), RtpigateError> {
         let rw = self.db.rw_transaction()?;
-        rw.upsert(TelemetrySeq {
-            id: SINGLETON,
-            seq,
-        })?;
+        rw.upsert(TelemetrySeq { id: SINGLETON, seq })?;
         rw.commit()?;
         Ok(())
     }
@@ -526,7 +523,10 @@ impl Store {
     pub fn load_buckets(&self) -> Result<Vec<StatBucket>, RtpigateError> {
         let r = self.db.r_transaction()?;
         let recs: Vec<HistoryBucketRec> = r.scan().primary()?.all()?.collect::<Result<_, _>>()?;
-        Ok(recs.into_iter().map(HistoryBucketRec::into_bucket).collect())
+        Ok(recs
+            .into_iter()
+            .map(HistoryBucketRec::into_bucket)
+            .collect())
     }
 
     /// Upsert a batch of buckets in a single transaction.

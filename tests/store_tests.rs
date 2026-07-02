@@ -149,8 +149,18 @@ fn history_buckets_upsert_and_delete() {
     let store = Store::open(&path).unwrap();
 
     let buckets = vec![
-        StatBucket { ts: 1000, total: 5, rf_received: 5, igated: 4, ..Default::default() },
-        StatBucket { ts: 1015, total: 2, ..Default::default() },
+        StatBucket {
+            ts: 1000,
+            total: 5,
+            rf_received: 5,
+            igated: 4,
+            ..Default::default()
+        },
+        StatBucket {
+            ts: 1015,
+            total: 2,
+            ..Default::default()
+        },
     ];
     store.upsert_buckets(&buckets).unwrap();
 
@@ -176,8 +186,14 @@ fn slicer_round_trip() {
     assert!(store.load_slicer().unwrap().is_none());
 
     let history = vec![
-        SlicerInterval { timestamp: Local::now(), counts: vec![1, 2, 3] },
-        SlicerInterval { timestamp: Local::now(), counts: vec![4, 5, 6] },
+        SlicerInterval {
+            timestamp: Local::now(),
+            counts: vec![1, 2, 3],
+        },
+        SlicerInterval {
+            timestamp: Local::now(),
+            counts: vec![4, 5, 6],
+        },
     ];
     store
         .save_slicer(3, &[0.7, 1.0, 1.3], &[10, 20, 30], &history)
@@ -215,7 +231,11 @@ fn sat_packets_round_trip_and_prune() {
     let loaded = store.load_sat_packets().unwrap();
     assert_eq!(loaded.len(), 2);
     // display fields survive the projection
-    assert!(loaded.iter().any(|p| p.frequency == 145.825 && p.is_satellite));
+    assert!(
+        loaded
+            .iter()
+            .any(|p| p.frequency == 145.825 && p.is_satellite)
+    );
     assert!(loaded.iter().any(|p| p.source == "N0CALL"));
 
     store.delete_sat_packets(&[k1]).unwrap();
