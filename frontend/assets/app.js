@@ -1839,6 +1839,28 @@
         }
         tr.appendChild(tdCoords);
 
+        // Altitude (ft) — formatted like the "Highest Altitude" station list.
+        var tdAlt = document.createElement("td");
+        tdAlt.className = "pkt-alt";
+        tdAlt.textContent = (type === "rf" && data.altitude_ft != null)
+            ? Math.round(data.altitude_ft).toLocaleString() + " ft"
+            : "--";
+        tr.appendChild(tdAlt);
+
+        // Speed (mph) — "xxx @ yyy°" (mph @ course), omitting whichever part is absent.
+        var tdSpeed = document.createElement("td");
+        tdSpeed.className = "pkt-speed";
+        if (type === "rf" && (data.speed_mph != null || data.course_deg != null)) {
+            var speedStr = data.speed_mph != null ? String(Math.round(data.speed_mph)) : "";
+            var courseStr = data.course_deg != null ? Math.round(data.course_deg) + "°" : "";
+            tdSpeed.textContent = (speedStr && courseStr)
+                ? speedStr + " @ " + courseStr
+                : (speedStr || courseStr);
+        } else {
+            tdSpeed.textContent = "--";
+        }
+        tr.appendChild(tdSpeed);
+
         // Hops
         var tdHops = document.createElement("td");
         tdHops.className = "pkt-hops";
@@ -1906,7 +1928,7 @@
         var thead = document.createElement("thead");
         var htr = document.createElement("tr");
         var cols = ["Time", "", "Source", "Freq", "Direct", "Sat", "Dropped",
-            "Garbled", "Twist", "Coordinates", "Hops", "Path", "Packet"];
+            "Garbled", "Twist", "Coordinates", "Altitude (ft)", "Speed (mph)", "Hops", "Path", "Packet"];
         var centered = { "Direct": 1, "Sat": 1, "Dropped": 1, "Garbled": 1, "Twist": 1, "Hops": 1 };
         for (var i = 0; i < cols.length; i++) {
             var th = document.createElement("th");

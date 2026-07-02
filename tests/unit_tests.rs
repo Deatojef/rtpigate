@@ -33,6 +33,8 @@ fn make_packet() -> RTPPacket {
         latitude: Some(49.0583),
         longitude: Some(-72.0292),
         altitude_ft: None,
+        speed_mph: None,
+        course_deg: None,
         slicer_mask: 0,
         twist: None,
     }

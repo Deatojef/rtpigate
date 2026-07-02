@@ -9,7 +9,7 @@ use chrono::Local;
 use rtpigate::config::{SlicerInterval, StationEntry};
 use rtpigate::history::StatBucket;
 use rtpigate::store::{PacketLifetime, Store};
-use rtpigate::stream::RTPPacket;
+use rtpigate::stream::{RTPPacket, TwistInfo};
 
 fn temp_db_path(tag: &str) -> String {
     let nanos = std::time::SystemTime::now()
@@ -69,6 +69,8 @@ fn sample_packet(freq: f64) -> RTPPacket {
         latitude: Some(40.0),
         longitude: Some(-105.0),
         altitude_ft: None,
+        speed_mph: None,
+        course_deg: None,
         slicer_mask: 0,
         twist: None,
     }
@@ -260,9 +262,19 @@ fn packets_query_by_source_and_prune() {
     let old = now - chrono::Duration::hours(2);
     let mid = now - chrono::Duration::minutes(30);
 
-    // Two packets from A (different times) + one from B.
+    // Two packets from A (different times) + one from B. The newest A packet
+    // carries a twist payload so we can assert it survives the round-trip.
+    let mut a_now = packet_with("A-1", now);
+    a_now.twist = Some(TwistInfo {
+        cols: 4,
+        mask: 0b0110,
+        zones: vec![0, 1, 1, 2],
+        centroid_db: -1.5,
+    });
+    a_now.speed_mph = Some(57.5);
+    a_now.course_deg = Some(270);
     store.insert_packet(&packet_with("A-1", old)).unwrap();
-    store.insert_packet(&packet_with("A-1", now)).unwrap();
+    store.insert_packet(&a_now).unwrap();
     store.insert_packet(&packet_with("B-2", mid)).unwrap();
 
     // Secondary-key query returns only the requested source, newest-first.
@@ -270,6 +282,16 @@ fn packets_query_by_source_and_prune() {
     assert_eq!(a.len(), 2);
     assert!(a.iter().all(|p| p.source == "A-1"));
     assert!(a[0].receivetime >= a[1].receivetime);
+    // Twist survives on the newest (with-twist) packet; the older one has none.
+    let twist = a[0].twist.as_ref().expect("twist restored");
+    assert_eq!(twist.cols, 4);
+    assert_eq!(twist.mask, 0b0110);
+    assert_eq!(twist.zones, vec![0, 1, 1, 2]);
+    assert!(a[1].twist.is_none());
+    // Course/speed survive on the newest packet; the older one has none.
+    assert_eq!(a[0].speed_mph, Some(57.5));
+    assert_eq!(a[0].course_deg, Some(270));
+    assert!(a[1].speed_mph.is_none() && a[1].course_deg.is_none());
     assert_eq!(store.load_packets_by_source("B-2").unwrap().len(), 1);
     assert!(store.load_packets_by_source("Z-9").unwrap().is_empty());
 

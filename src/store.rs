@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{SlicerInterval, StationEntry};
 use crate::error::RtpigateError;
 use crate::history::StatBucket;
-use crate::stream::RTPPacket;
+use crate::stream::{RTPPacket, TwistInfo};
 
 // Primary key for every singleton record (one row per table).
 const SINGLETON: u8 = 0;
@@ -202,13 +202,75 @@ struct WatchedStationRec {
     added_micros: i64,
 }
 
-// Table keyed by receive-time microseconds: one heard packet in the rolling
-// packet-history window (see `[storage] packet_history`). Same display fields as
-// `SatPacketRec`; the `source` secondary key lets a monitor tab range-scan just
-// one station's packets. Non-satellite and satellite packets alike land here —
-// the separate 24h `SatPacketRec` table is left untouched.
+// Version 1 of the packet-history record: the original field set, before the
+// twist-bar fields were added. Retained (without `#[native_db]`) so native_model
+// can migrate rows written by an earlier build up to the current `PacketRec`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[native_model(id = 10, version = 1)]
+struct PacketRecV1 {
+    key_micros: i64,
+    source: String,
+    raw: String,
+    info: String,
+    path: String,
+    digipeater_path: Vec<String>,
+    hops: u32,
+    ptype: char,
+    destination: String,
+    heard_direct: bool,
+    heardfrom: String,
+    was_digipeated: bool,
+    rfonly: bool,
+    frequency: f64,
+    is_satellite: bool,
+    igated: bool,
+    info_invalid_bytes: u64,
+    object_name: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    altitude_ft: Option<f64>,
+}
+
+// Version 2 of the packet-history record: v1 plus the twist-bar payload, before
+// the course/speed fields were added. Retained (without `#[native_db]`) so
+// native_model can migrate v2 rows up to the current `PacketRec`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 10, version = 2, from = PacketRecV1)]
+struct PacketRecV2 {
+    key_micros: i64,
+    source: String,
+    raw: String,
+    info: String,
+    path: String,
+    digipeater_path: Vec<String>,
+    hops: u32,
+    ptype: char,
+    destination: String,
+    heard_direct: bool,
+    heardfrom: String,
+    was_digipeated: bool,
+    rfonly: bool,
+    frequency: f64,
+    is_satellite: bool,
+    igated: bool,
+    info_invalid_bytes: u64,
+    object_name: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    altitude_ft: Option<f64>,
+    twist_cols: u32,
+    twist_mask: u16,
+    twist_zones: Vec<u8>,
+    twist_centroid_db: f32,
+}
+
+// Table keyed by receive-time microseconds: one heard packet in the rolling
+// packet-history window (see `[storage] packet_history`). Carries the display
+// fields, the twist-bar payload, and parsed course/speed; the `source` secondary
+// key lets a monitor tab range-scan just one station's packets. Non-satellite and
+// satellite packets alike land here — the separate 24h `SatPacketRec` is untouched.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 10, version = 3, from = PacketRecV2)]
 #[native_db]
 struct PacketRec {
     #[primary_key]
@@ -234,6 +296,146 @@ struct PacketRec {
     latitude: Option<f64>,
     longitude: Option<f64>,
     altitude_ft: Option<f64>,
+    // Twist bar payload, so backfilled station-tab rows render it like live ones.
+    // `twist_cols == 0` encodes an absent TwistInfo (no slicer fired).
+    twist_cols: u32,
+    twist_mask: u16,
+    twist_zones: Vec<u8>,
+    twist_centroid_db: f32,
+    // Parsed course/speed. `speed_mph`/`course_deg` are None when the report
+    // carried neither (or a 000 "unknown" course). Rows migrated from v1/v2
+    // default to None (the data was never persisted then).
+    speed_mph: Option<f64>,
+    course_deg: Option<u16>,
+}
+
+// native_model needs both migration directions for each consecutive version pair.
+// v1 <-> v2 defaults/drops the twist fields.
+impl From<PacketRecV1> for PacketRecV2 {
+    fn from(v: PacketRecV1) -> Self {
+        PacketRecV2 {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+            twist_cols: 0,
+            twist_mask: 0,
+            twist_zones: Vec::new(),
+            twist_centroid_db: 0.0,
+        }
+    }
+}
+
+impl From<PacketRecV2> for PacketRecV1 {
+    fn from(v: PacketRecV2) -> Self {
+        PacketRecV1 {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+        }
+    }
+}
+
+// v2 <-> v3 defaults/drops the course/speed fields.
+impl From<PacketRecV2> for PacketRec {
+    fn from(v: PacketRecV2) -> Self {
+        PacketRec {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+            twist_cols: v.twist_cols,
+            twist_mask: v.twist_mask,
+            twist_zones: v.twist_zones,
+            twist_centroid_db: v.twist_centroid_db,
+            speed_mph: None,
+            course_deg: None,
+        }
+    }
+}
+
+impl From<PacketRec> for PacketRecV2 {
+    fn from(v: PacketRec) -> Self {
+        PacketRecV2 {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+            twist_cols: v.twist_cols,
+            twist_mask: v.twist_mask,
+            twist_zones: v.twist_zones,
+            twist_centroid_db: v.twist_centroid_db,
+        }
+    }
 }
 
 //======================= model registry ===============================
@@ -401,6 +603,8 @@ impl SatPacketRec {
             latitude: self.latitude,
             longitude: self.longitude,
             altitude_ft: self.altitude_ft,
+            speed_mph: None,
+            course_deg: None,
             slicer_mask: 0,
             twist: None,
         }
@@ -409,6 +613,10 @@ impl SatPacketRec {
 
 impl PacketRec {
     fn from_packet(p: &RTPPacket) -> Self {
+        let (twist_cols, twist_mask, twist_zones, twist_centroid_db) = match &p.twist {
+            Some(t) => (t.cols as u32, t.mask, t.zones.clone(), t.centroid_db),
+            None => (0, 0, Vec::new(), 0.0),
+        };
         PacketRec {
             key_micros: to_micros(&p.receivetime),
             source: p.source.clone(),
@@ -431,14 +639,31 @@ impl PacketRec {
             latitude: p.latitude,
             longitude: p.longitude,
             altitude_ft: p.altitude_ft,
+            twist_cols,
+            twist_mask,
+            twist_zones,
+            twist_centroid_db,
+            speed_mph: p.speed_mph,
+            course_deg: p.course_deg,
         }
     }
 
-    // Reconstruct a display-only RTPPacket. As with `SatPacketRec::into_packet`,
-    // the non-serialized live-path fields (`received_instant`, `info_bytes`,
-    // `slicer_mask`, `twist`) are never read for restored packets — they feed only
-    // the /api/station-packets JSON handler — so defaults are safe.
+    // Reconstruct a display-only RTPPacket. The non-serialized live-path fields
+    // (`received_instant`, `info_bytes`, `slicer_mask`) are never read for restored
+    // packets — they feed only the /api/station-packets JSON handler — so defaults
+    // are safe. `twist` is rebuilt from the persisted fields so backfilled station
+    // rows render the twist bar like live ones.
     fn into_packet(self) -> RTPPacket {
+        let twist = if self.twist_cols > 0 {
+            Some(TwistInfo {
+                cols: self.twist_cols as usize,
+                mask: self.twist_mask,
+                zones: self.twist_zones,
+                centroid_db: self.twist_centroid_db,
+            })
+        } else {
+            None
+        };
         RTPPacket {
             receivetime: from_micros(self.key_micros),
             received_instant: Instant::now(),
@@ -463,8 +688,10 @@ impl PacketRec {
             latitude: self.latitude,
             longitude: self.longitude,
             altitude_ft: self.altitude_ft,
+            speed_mph: self.speed_mph,
+            course_deg: self.course_deg,
             slicer_mask: 0,
-            twist: None,
+            twist,
         }
     }
 }

@@ -660,6 +660,12 @@ td.pkt-garbled {
     text-align: center;
 }
 
+td.pkt-alt,
+td.pkt-speed {
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
 /* Per-packet twist bar: one cell per demodulator slicer, laid left->right as a
    pre-emph -> de-emph axis. Lit cells = slicers that decoded the frame (colored
    by zone); empty cells are recessed slots so the gaps stay distinct from the

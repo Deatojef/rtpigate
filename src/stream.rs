@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use log::{debug, error, info, warn};
 
+use aprs_decode::Extension;
 use aprs_decode::packet::{AprsData, AprsPacket as DecodedPacket};
 use aprs_stream::subscribe::{RecvError, SubscribeConfig};
 use aprs_stream::{AprsFrame, Subscriber};
@@ -39,6 +40,28 @@ fn slicer_zone(g: f32) -> u8 {
         1
     } else {
         2
+    }
+}
+
+// Knots -> statute mph (APRS course/speed is native knots).
+const KNOTS_TO_MPH: f64 = 1.150_779;
+
+// Pull course/speed out of a position/object/item data extension. Returns
+// (speed_mph, course_deg); course 000 (unknown/not applicable) becomes None.
+fn course_speed_from_extension(ext: Option<&Extension>) -> (Option<f64>, Option<u16>) {
+    match ext {
+        Some(Extension::DirectionSpeed {
+            direction_degrees,
+            speed_knots,
+        }) => {
+            let course = if *direction_degrees == 0 {
+                None
+            } else {
+                Some(*direction_degrees)
+            };
+            (Some(*speed_knots as f64 * KNOTS_TO_MPH), course)
+        }
+        _ => (None, None),
     }
 }
 
@@ -146,6 +169,11 @@ pub struct RTPPacket {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub altitude_ft: Option<f64>,
+
+    // parsed course/speed (if the report carried a course-speed extension or is
+    // Mic-E). Speed is converted to mph; course is degrees (None when unknown/000).
+    pub speed_mph: Option<f64>,
+    pub course_deg: Option<u16>,
 
     // bitmask of demodulator slicers that decoded this frame (bit i = slicer i).
     // Used only for the slicer-waterfall aggregation; not serialised per-packet.
@@ -969,6 +997,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
     // parse position/object/item data and the map symbol. Prefer the payload the
     // producer already parsed; only decode the TNC2 text if it wasn't typed.
     let (mut latitude, mut longitude, mut altitude_ft) = (None, None, None);
+    let (mut speed_mph, mut course_deg) = (None, None);
     let mut object_name: Option<String> = None;
     let (mut symbol_table, mut symbol_code) = (None, None);
 
@@ -982,6 +1011,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 latitude = Some(pos.position.latitude.value());
                 longitude = Some(pos.position.longitude.value());
                 altitude_ft = pos.position.altitude.map(|a| a.feet);
+                (speed_mph, course_deg) = course_speed_from_extension(pos.extension.as_ref());
                 symbol_table = Some(pos.position.symbol.table);
                 symbol_code = Some(pos.position.symbol.code);
             }
@@ -990,6 +1020,14 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 longitude = Some(mice.longitude.value());
                 // aprs-decode reports Mic-E altitude in metres; convert to feet.
                 altitude_ft = mice.altitude_m.map(|m| m * 3.28084);
+                // Mic-E always carries course/speed; course 000 means unknown.
+                speed_mph = Some(mice.speed.knots() as f64 * KNOTS_TO_MPH);
+                let course = mice.course.degrees();
+                course_deg = if course == 0 {
+                    None
+                } else {
+                    Some(course as u16)
+                };
                 symbol_table = Some(mice.symbol_table);
                 symbol_code = Some(mice.symbol_code);
             }
@@ -998,6 +1036,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 latitude = Some(obj.position.latitude.value());
                 longitude = Some(obj.position.longitude.value());
                 altitude_ft = obj.position.altitude.map(|a| a.feet);
+                (speed_mph, course_deg) = course_speed_from_extension(obj.extension.as_ref());
                 symbol_table = Some(obj.position.symbol.table);
                 symbol_code = Some(obj.position.symbol.code);
             }
@@ -1006,6 +1045,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
                 latitude = Some(item.position.latitude.value());
                 longitude = Some(item.position.longitude.value());
                 altitude_ft = item.position.altitude.map(|a| a.feet);
+                (speed_mph, course_deg) = course_speed_from_extension(item.extension.as_ref());
                 symbol_table = Some(item.position.symbol.table);
                 symbol_code = Some(item.position.symbol.code);
             }
@@ -1039,6 +1079,8 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
         latitude,
         longitude,
         altitude_ft,
+        speed_mph,
+        course_deg,
         slicer_mask: frame.rf.slicer_mask.unwrap_or(0),
         twist: None,
     };

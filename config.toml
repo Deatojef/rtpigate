@@ -131,7 +131,7 @@ min_beacon_secs = 30
 # /etc/rtpigate/config.toml on install).
 ###########################################
 [storage]
-# path = "./rtpigate.db"
+#path = "./rtpigate.db"
 path = "/var/lib/rtpigate/rtpigate.db"
 #
 # Rolling packet-history window in hours, used by the per-station monitor tabs
