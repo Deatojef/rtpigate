@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 timestamp,
                 module_name,
                 level,
-                &record.args(),
+                record.args(),
             )
         })
         .start()?;

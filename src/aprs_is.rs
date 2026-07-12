@@ -179,7 +179,7 @@ pub async fn aprsis_task(
     };
 
     // construct the hostname:port string
-    let address = format!("{}:{}", &host, &port);
+    let address = format!("{}:{}", host, port);
 
     // the login string used when connecting to aprs-is
     let loginstring = config.aprsis_login_string();
