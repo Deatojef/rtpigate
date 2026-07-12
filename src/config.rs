@@ -617,7 +617,16 @@ impl APRSISLogin for Config {
             String::from("-1")
         };
 
-        format!("user {} pass {} vers {}\r\n", callsign, passcode, "1.0",)
+        // APRS-IS requires the `vers` field to carry the software name and
+        // version as two space-separated tokens (e.g. "vers rtpigate 0.5.0");
+        // a single joined token is rejected at login.
+        format!(
+            "user {} pass {} vers {} {}\r\n",
+            callsign,
+            passcode,
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        )
     }
 }
 
