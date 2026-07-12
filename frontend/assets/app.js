@@ -212,9 +212,13 @@
             headers = ["", "Callsign", "Last Heard", "Freq", "Altitude (ft)", "Path", "Hops"];
         }
 
-        // Update table headers
+        // Update table headers. A leading monitor ("M") column mirrors the
+        // Recent Packets table so any listed station can be flagged for a tab.
         heardThead.innerHTML = "";
         var headerRow = document.createElement("tr");
+        var thMon = document.createElement("th");
+        thMon.className = "monitor-col";
+        headerRow.appendChild(thMon);
         for (var h = 0; h < headers.length; h++) {
             var th = document.createElement("th");
             th.textContent = headers[h];
@@ -229,7 +233,7 @@
         if (displayCount === 0) {
             var tr = document.createElement("tr");
             var td = document.createElement("td");
-            td.colSpan = headers.length;
+            td.colSpan = headers.length + 1;
             td.className = "empty-state";
             td.textContent = "No stations with qualifying data";
             tr.appendChild(td);
@@ -241,8 +245,19 @@
             var s = stations[i];
             var tr = document.createElement("tr");
 
+            // Monitor button ("M") — flags the RF source for its own filtered
+            // tab. For objects the source is the transmitting station.
+            var tdMon = document.createElement("td");
+            tdMon.className = "pkt-monitor";
+            var monSource = s.transmitted_by || s.callsign;
+            if (monSource) {
+                tdMon.appendChild(makeMonitorButton(monSource));
+            }
+            tr.appendChild(tdMon);
+
             // Symbol
             var tdSymbol = document.createElement("td");
+            tdSymbol.className = "heard-symbol";
             var imgSrc = getSymbolImageFromEntry(s);
             if (imgSrc) {
                 var img = document.createElement("img");
@@ -255,6 +270,7 @@
 
             // Callsign
             var tdCall = document.createElement("td");
+            tdCall.className = "heard-callsign";
             var callLink = document.createElement("a");
             callLink.href = aprsfiUrl(s.callsign);
             callLink.target = "_blank";
@@ -271,11 +287,13 @@
 
             // Last Heard
             var tdTime = document.createElement("td");
+            tdTime.className = "heard-muted";
             tdTime.textContent = formatDateTime(s.last_heard);
             tr.appendChild(tdTime);
 
             // Frequency
             var tdFreq = document.createElement("td");
+            tdFreq.className = "heard-muted";
             tdFreq.textContent = s.frequency.toFixed(3);
             tr.appendChild(tdFreq);
 
@@ -372,8 +390,13 @@
         var headers = ["", "Callsign", "Date/Time", "Freq", "Igate", "Altitude (ft)",
                        "Path", "Hops", "Distance"];
 
+        // Leading monitor ("M") column mirrors the Stations lists so a satellite
+        // packet's source station can be flagged for its own filtered tab.
         heardThead.innerHTML = "";
         var headerRow = document.createElement("tr");
+        var thMon = document.createElement("th");
+        thMon.className = "monitor-col";
+        headerRow.appendChild(thMon);
         for (var h = 0; h < headers.length; h++) {
             var th = document.createElement("th");
             th.textContent = headers[h];
@@ -386,7 +409,7 @@
         if (satPackets.length === 0) {
             var emptyTr = document.createElement("tr");
             var emptyTd = document.createElement("td");
-            emptyTd.colSpan = headers.length;
+            emptyTd.colSpan = headers.length + 1;
             emptyTd.className = "empty-state";
             emptyTd.textContent = "No satellite packets in the last 24 hours";
             emptyTr.appendChild(emptyTd);
@@ -399,8 +422,18 @@
             var p = satPackets[i];
             var tr = document.createElement("tr");
 
+            // Monitor button ("M") — flags the packet's RF source (the
+            // transmitting station for a relayed object) for its own tab.
+            var tdMon = document.createElement("td");
+            tdMon.className = "pkt-monitor";
+            if (p.source) {
+                tdMon.appendChild(makeMonitorButton(p.source));
+            }
+            tr.appendChild(tdMon);
+
             // Symbol
             var tdSymbol = document.createElement("td");
+            tdSymbol.className = "heard-symbol";
             var imgSrc = getSymbolImage(p.info, p.destination);
             if (imgSrc) {
                 var img = document.createElement("img");
@@ -413,6 +446,7 @@
 
             // Callsign (with "via" if object/item)
             var tdCall = document.createElement("td");
+            tdCall.className = "heard-callsign";
             var displaySource = p.object_name || p.source;
             var callLink = document.createElement("a");
             callLink.href = aprsfiUrl(displaySource);
@@ -431,7 +465,7 @@
             // Time — hover or click reveals the full raw packet, mirroring the
             // Recent Packets text cell.
             var tdTime = document.createElement("td");
-            tdTime.className = "sat-time";
+            tdTime.className = "sat-time heard-muted";
             tdTime.textContent = formatDateTime(p.receivetime);
             attachRawTooltip(tdTime, p.raw);
             tr.appendChild(tdTime);
@@ -441,7 +475,7 @@
             // configured satellite frequency (e.g. terrestrial traffic the
             // 145.825 RX also heard).
             var tdFreq = document.createElement("td");
-            tdFreq.className = "heard-freq";
+            tdFreq.className = "heard-freq heard-muted";
             tdFreq.textContent = p.frequency != null ? p.frequency.toFixed(3) : "--";
             tr.appendChild(tdFreq);
 
@@ -1626,6 +1660,20 @@
 
     // ---- Packet row creation ----
 
+    // Build an "M" (monitor) button that flags `source` for its own filtered
+    // tab. Shared by the Recent Packets rows and the Stations lists.
+    function makeMonitorButton(source) {
+        var mBtn = document.createElement("button");
+        mBtn.className = "monitor-btn";
+        mBtn.textContent = "M";
+        mBtn.title = "Monitor " + source + " in its own tab";
+        mBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            watchStation(source);
+        });
+        return mBtn;
+    }
+
     // Build and insert a packet row.
     //   opts.body    - target <tbody> (defaults to the Recent Packets body)
     //   opts.monitor - prepend the "M" (monitor) button column (Recent tab only)
@@ -1640,23 +1688,13 @@
         // Stash the receive time (ms) so station tabs can age out stale rows.
         tr._rt = Date.parse(data.receivetime);
 
-        // Monitor button ("M") — only shown in the Recent Packets tab. Clicking
+        // Monitor button ("M") — shown in the Recent Packets tab. Clicking
         // it flags the source station for its own filtered tab.
         if (opts.monitor) {
             var tdMon = document.createElement("td");
             tdMon.className = "pkt-monitor";
             if (type === "rf" && data.source) {
-                var mBtn = document.createElement("button");
-                mBtn.className = "monitor-btn";
-                mBtn.textContent = "M";
-                mBtn.title = "Monitor " + data.source + " in its own tab";
-                (function (station) {
-                    mBtn.addEventListener("click", function (e) {
-                        e.stopPropagation();
-                        watchStation(station);
-                    });
-                })(data.source);
-                tdMon.appendChild(mBtn);
+                tdMon.appendChild(makeMonitorButton(data.source));
             }
             tr.appendChild(tdMon);
         }
@@ -1913,7 +1951,7 @@
     // backfilled with the full rolling-history window for its station. Live
     // packets are routed into open tabs from the rfpacket SSE stream.
 
-    var MAX_WATCHED = 6;             // keep in sync with backend MAX_WATCHED
+    var MAX_WATCHED = 20;            // keep in sync with backend MAX_WATCHED
     var STATION_MAX_ROWS = 3000;     // DOM safety cap per station tab
     var stationTabs = {};            // station -> { btn, panel, body }
     var packetNoticeTimer = null;
@@ -2016,16 +2054,28 @@
         xhr.send();
     }
 
+    // Briefly flash an inactive station tab green to signal a fresh packet is
+    // waiting inside. The active tab already shows the new row (and is already
+    // green), so it's skipped. Re-adding the class after a reflow restarts the
+    // animation for back-to-back packets.
+    function flashStationTab(btn) {
+        if (!btn || btn.classList.contains("active")) return;
+        btn.classList.remove("tab-flash");
+        void btn.offsetWidth; // force reflow so the animation restarts
+        btn.classList.add("tab-flash");
+    }
+
     // Fan a live packet out to its station tab, if one is open.
     function routeToStationTab(data) {
         if (!data.source) return;
         var entry = stationTabs[data.source];
         if (!entry) return;
         addPacketRow("rf", data, { body: entry.body, trim: STATION_MAX_ROWS });
+        flashStationTab(entry.btn);
     }
 
     // Handle an "M" click: register the station with the backend, then open its
-    // tab. Enforces the 6-station cap both client-side and via the 409 response.
+    // tab. Enforces the MAX_WATCHED cap both client-side and via the 409 response.
     function watchStation(station) {
         if (!station) return;
         if (stationTabs[station]) { activatePacketTab(station); return; }

@@ -568,7 +568,7 @@ main {
     overflow-y: auto;
 }
 
-/* Monitor ("M") column, only present in the Recent Packets table. */
+/* Monitor ("M") column, present in the Recent Packets and Stations tables. */
 th.monitor-col {
     width: 1.6em;
 }
@@ -865,6 +865,18 @@ tr.rf-packet td.pkt-source a:hover {
     border-color: var(--highlight);
 }
 
+/* Brief green flash on an inactive station tab when a new packet arrives for
+   it, signalling fresh traffic is waiting inside. Applied by flashStationTab();
+   the keyframe ends at the base tab state so nothing lingers once it finishes. */
+@keyframes tab-flash {
+    0%   { background-color: var(--highlight); border-color: var(--highlight); color: #fff; }
+    100% { background-color: transparent; border-color: var(--panel-border); color: var(--text-muted); }
+}
+
+.station-tab-btn.tab-flash {
+    animation: tab-flash 0.6s ease-out;
+}
+
 .empty-state {
     text-align: center;
     color: var(--text-dim);
@@ -939,29 +951,31 @@ tr.rf-packet td.pkt-source a:hover {
     background-color: var(--row-hover);
 }
 
-#heard-table td:nth-child(1) {
+/* Class-based column styling. The Stations and Satellites tables share
+   #heard-table but differ in column order (Stations has a leading monitor
+   "M" column), so these target cell classes rather than nth-child positions. */
+#heard-table td.heard-symbol {
     text-align: center;
 }
 
-#heard-table td:nth-child(1) img {
+#heard-table td.heard-symbol img {
     height: 16px;
     width: 16px;
     vertical-align: middle;
 }
 
-#heard-table td:nth-child(2),
-#heard-table td:nth-child(2) a {
+#heard-table td.heard-callsign,
+#heard-table td.heard-callsign a {
     font-weight: bold;
     color: var(--rf-color);
     text-decoration: none;
 }
 
-#heard-table td:nth-child(2) a:hover {
+#heard-table td.heard-callsign a:hover {
     text-decoration: underline;
 }
 
-#heard-table td:nth-child(3),
-#heard-table td:nth-child(4) {
+#heard-table td.heard-muted {
     color: var(--text-muted);
     font-size: 0.9em;
 }

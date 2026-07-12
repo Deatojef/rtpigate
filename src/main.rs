@@ -50,7 +50,7 @@ mod sse;
 use sse::{SSEEvent, sse_task};
 
 // Maximum number of simultaneously watched stations (monitor tabs).
-const MAX_WATCHED: usize = 6;
+const MAX_WATCHED: usize = 20;
 
 // for the axum application state
 #[derive(Clone)]
