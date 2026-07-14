@@ -35,6 +35,7 @@ fn make_packet() -> RTPPacket {
         altitude_ft: None,
         speed_mph: None,
         course_deg: None,
+        snr_db: None,
         slicer_mask: 0,
         twist: None,
     }

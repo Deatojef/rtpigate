@@ -71,6 +71,7 @@ fn sample_packet(freq: f64) -> RTPPacket {
         altitude_ft: None,
         speed_mph: None,
         course_deg: None,
+        snr_db: None,
         slicer_mask: 0,
         twist: None,
     }
@@ -273,6 +274,7 @@ fn packets_query_by_source_and_prune() {
     });
     a_now.speed_mph = Some(57.5);
     a_now.course_deg = Some(270);
+    a_now.snr_db = Some(22.4);
     store.insert_packet(&packet_with("A-1", old)).unwrap();
     store.insert_packet(&a_now).unwrap();
     store.insert_packet(&packet_with("B-2", mid)).unwrap();
@@ -292,6 +294,9 @@ fn packets_query_by_source_and_prune() {
     assert_eq!(a[0].speed_mph, Some(57.5));
     assert_eq!(a[0].course_deg, Some(270));
     assert!(a[1].speed_mph.is_none() && a[1].course_deg.is_none());
+    // SNR survives on the newest packet; the older one has none.
+    assert_eq!(a[0].snr_db, Some(22.4));
+    assert!(a[1].snr_db.is_none());
     assert_eq!(store.load_packets_by_source("B-2").unwrap().len(), 1);
     assert!(store.load_packets_by_source("Z-9").unwrap().is_empty());
 
