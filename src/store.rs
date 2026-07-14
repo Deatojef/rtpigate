@@ -264,13 +264,49 @@ struct PacketRecV2 {
     twist_centroid_db: f32,
 }
 
-// Table keyed by receive-time microseconds: one heard packet in the rolling
-// packet-history window (see `[storage] packet_history`). Carries the display
-// fields, the twist-bar payload, and parsed course/speed; the `source` secondary
-// key lets a monitor tab range-scan just one station's packets. Non-satellite and
-// satellite packets alike land here — the separate 24h `SatPacketRec` is untouched.
+// Version 3 of the packet-history record: v2 plus parsed course/speed, before the
+// `snr_db` field was added. Retained (without `#[native_db]`) so native_model can
+// migrate v3 rows up to the current `PacketRec`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[native_model(id = 10, version = 3, from = PacketRecV2)]
+struct PacketRecV3 {
+    key_micros: i64,
+    source: String,
+    raw: String,
+    info: String,
+    path: String,
+    digipeater_path: Vec<String>,
+    hops: u32,
+    ptype: char,
+    destination: String,
+    heard_direct: bool,
+    heardfrom: String,
+    was_digipeated: bool,
+    rfonly: bool,
+    frequency: f64,
+    is_satellite: bool,
+    igated: bool,
+    info_invalid_bytes: u64,
+    object_name: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    altitude_ft: Option<f64>,
+    twist_cols: u32,
+    twist_mask: u16,
+    twist_zones: Vec<u8>,
+    twist_centroid_db: f32,
+    speed_mph: Option<f64>,
+    course_deg: Option<u16>,
+}
+
+// Table keyed by receive-time microseconds: one heard packet in the rolling
+// packet-history window (see `[storage] packet_history`). Carries the display
+// fields, the twist-bar payload, parsed course/speed, and the RF SNR (dB); the
+// `source` secondary key lets a monitor tab range-scan just one station's packets.
+// Non-satellite and satellite packets alike land here — the separate 24h
+// `SatPacketRec` is untouched.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 10, version = 4, from = PacketRecV3)]
 #[native_db]
 struct PacketRec {
     #[primary_key]
@@ -307,6 +343,9 @@ struct PacketRec {
     // default to None (the data was never persisted then).
     speed_mph: Option<f64>,
     course_deg: Option<u16>,
+    // RF signal-to-noise ratio in dB when the producer measured it; None for
+    // producers that don't report it and for rows migrated from v1/v2/v3.
+    snr_db: Option<f32>,
 }
 
 // native_model needs both migration directions for each consecutive version pair.
@@ -372,9 +411,9 @@ impl From<PacketRecV2> for PacketRecV1 {
 }
 
 // v2 <-> v3 defaults/drops the course/speed fields.
-impl From<PacketRecV2> for PacketRec {
+impl From<PacketRecV2> for PacketRecV3 {
     fn from(v: PacketRecV2) -> Self {
-        PacketRec {
+        PacketRecV3 {
             key_micros: v.key_micros,
             source: v.source,
             raw: v.raw,
@@ -406,8 +445,8 @@ impl From<PacketRecV2> for PacketRec {
     }
 }
 
-impl From<PacketRec> for PacketRecV2 {
-    fn from(v: PacketRec) -> Self {
+impl From<PacketRecV3> for PacketRecV2 {
+    fn from(v: PacketRecV3) -> Self {
         PacketRecV2 {
             key_micros: v.key_micros,
             source: v.source,
@@ -434,6 +473,76 @@ impl From<PacketRec> for PacketRecV2 {
             twist_mask: v.twist_mask,
             twist_zones: v.twist_zones,
             twist_centroid_db: v.twist_centroid_db,
+        }
+    }
+}
+
+// v3 <-> v4 defaults/drops the snr_db field.
+impl From<PacketRecV3> for PacketRec {
+    fn from(v: PacketRecV3) -> Self {
+        PacketRec {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+            twist_cols: v.twist_cols,
+            twist_mask: v.twist_mask,
+            twist_zones: v.twist_zones,
+            twist_centroid_db: v.twist_centroid_db,
+            speed_mph: v.speed_mph,
+            course_deg: v.course_deg,
+            snr_db: None,
+        }
+    }
+}
+
+impl From<PacketRec> for PacketRecV3 {
+    fn from(v: PacketRec) -> Self {
+        PacketRecV3 {
+            key_micros: v.key_micros,
+            source: v.source,
+            raw: v.raw,
+            info: v.info,
+            path: v.path,
+            digipeater_path: v.digipeater_path,
+            hops: v.hops,
+            ptype: v.ptype,
+            destination: v.destination,
+            heard_direct: v.heard_direct,
+            heardfrom: v.heardfrom,
+            was_digipeated: v.was_digipeated,
+            rfonly: v.rfonly,
+            frequency: v.frequency,
+            is_satellite: v.is_satellite,
+            igated: v.igated,
+            info_invalid_bytes: v.info_invalid_bytes,
+            object_name: v.object_name,
+            latitude: v.latitude,
+            longitude: v.longitude,
+            altitude_ft: v.altitude_ft,
+            twist_cols: v.twist_cols,
+            twist_mask: v.twist_mask,
+            twist_zones: v.twist_zones,
+            twist_centroid_db: v.twist_centroid_db,
+            speed_mph: v.speed_mph,
+            course_deg: v.course_deg,
         }
     }
 }
@@ -605,6 +714,7 @@ impl SatPacketRec {
             altitude_ft: self.altitude_ft,
             speed_mph: None,
             course_deg: None,
+            snr_db: None,
             slicer_mask: 0,
             twist: None,
         }
@@ -645,6 +755,7 @@ impl PacketRec {
             twist_centroid_db,
             speed_mph: p.speed_mph,
             course_deg: p.course_deg,
+            snr_db: p.snr_db,
         }
     }
 
@@ -690,6 +801,7 @@ impl PacketRec {
             altitude_ft: self.altitude_ft,
             speed_mph: self.speed_mph,
             course_deg: self.course_deg,
+            snr_db: self.snr_db,
             slicer_mask: 0,
             twist,
         }

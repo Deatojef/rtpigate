@@ -136,6 +136,7 @@
                             <th class="center">Sat</th>
                             <th class="center" title="Dropped: when igating is enabled, T (highlighted amber) = the packet was NOT forwarded to APRS-IS (dropped by the gating policy), F = forwarded. When igating is disabled, every packet shows a plain T (nothing is forwarded). Reflects the gating policy at receive time; does not account for duplicate suppression.">Dropped</th>
                             <th class="center" title="Garbled: T if the decoder flagged bytes in the info field that are almost certainly not real APRS payload (C0 control bytes or invalid UTF-8, e.g. a stuck transmitter's trailing 0xff). The frame is still FCS-valid; this is advisory.">Garbled</th>
+                            <th class="center" title="SNR: signal-to-noise ratio in dB measured by the decoder at receive time, when reported. Higher is a stronger/cleaner signal. Blank (--) when the producer doesn't measure it.">SNR</th>
                             <th class="center" title="Twist: which demodulator slicers decoded the frame, drawn as a pre-emph &rarr; de-emph strip. Lit cells = slicers that decoded; cells toward the left = pre-emphasized (loud space), toward the right = de-emphasized (loud mark), center = flat. Reflects received twist, not guaranteed transmitter pre-emphasis.">Twist</th>
                             <th>Coordinates</th>
                             <th>Altitude (ft)</th>

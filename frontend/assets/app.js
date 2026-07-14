@@ -1836,6 +1836,17 @@
         }
         tr.appendChild(tdGarbled);
 
+        // SNR (dB) — signal-to-noise ratio the decoder measured, when reported.
+        // RF only; "--" for inet packets and for producers that don't measure it.
+        var tdSnr = document.createElement("td");
+        tdSnr.className = "pkt-snr";
+        if (type === "rf" && data.snr_db != null) {
+            tdSnr.textContent = data.snr_db.toFixed(1) + " dB";
+        } else {
+            tdSnr.textContent = "--";
+        }
+        tr.appendChild(tdSnr);
+
         // Twist bar — which demodulator slicers decoded the frame, as a compact
         // pre-emph -> de-emph strip. RF only; "--" when no slicer data is present.
         var tdTwist = document.createElement("td");
@@ -1966,8 +1977,8 @@
         var thead = document.createElement("thead");
         var htr = document.createElement("tr");
         var cols = ["Time", "", "Source", "Freq", "Direct", "Sat", "Dropped",
-            "Garbled", "Twist", "Coordinates", "Altitude (ft)", "Speed (mph)", "Hops", "Path", "Packet"];
-        var centered = { "Direct": 1, "Sat": 1, "Dropped": 1, "Garbled": 1, "Twist": 1, "Hops": 1 };
+            "Garbled", "SNR", "Twist", "Coordinates", "Altitude (ft)", "Speed (mph)", "Hops", "Path", "Packet"];
+        var centered = { "Direct": 1, "Sat": 1, "Dropped": 1, "Garbled": 1, "SNR": 1, "Twist": 1, "Hops": 1 };
         for (var i = 0; i < cols.length; i++) {
             var th = document.createElement("th");
             th.textContent = cols[i];

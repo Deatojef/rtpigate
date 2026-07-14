@@ -175,6 +175,12 @@ pub struct RTPPacket {
     pub speed_mph: Option<f64>,
     pub course_deg: Option<u16>,
 
+    // signal-to-noise ratio in dB from the frame's RF metadata, when the producer
+    // measured it (e.g. the SDR path); None for producers/decoders that don't
+    // report it (the RTP path). Serialized to SSE clients for the Recent Packets
+    // "SNR" column.
+    pub snr_db: Option<f32>,
+
     // bitmask of demodulator slicers that decoded this frame (bit i = slicer i).
     // Used only for the slicer-waterfall aggregation; not serialised per-packet.
     #[serde(skip)]
@@ -1081,6 +1087,7 @@ fn map_frame(frame: &AprsFrame) -> Option<MappedPacket> {
         altitude_ft,
         speed_mph,
         course_deg,
+        snr_db: frame.rf.snr_db,
         slicer_mask: frame.rf.slicer_mask.unwrap_or(0),
         twist: None,
     };
